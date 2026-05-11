@@ -2,8 +2,8 @@ import { writeObservation, writeSessionSummary, updateIndex, getMemDir, ensureMe
 import { classifyTool, isTrivial, generateObservation, extractFiles } from './utils/observer.js';
 import { buildContext } from './context/inject.js';
 import { searchMemories } from './search/search.js';
-import { generateAIObservation, generateAISummary, isAIObservationAvailable } from './ai/observer.js';
-import type { ToolExecution, ParsedObservation } from './ai/prompts.js';
+import { setOpencodeClient, isSDKAvailable, generateObservationViaSDK, generateSessionSummaryViaSDK } from './sdk/client.js';
+import type { ObservationSchema, SessionSummarySchema } from './sdk/observer.js';
 
 interface PluginContext {
   project: { name: string; path: string };
@@ -56,11 +56,14 @@ const sessionFilesEdited: Record<string, Set<string>> = {};
 const sessionUserPrompt: Record<string, string> = {};
 
 export const MemPlugin: Plugin = async ({ project, client, directory }: PluginContext) => {
+  // Set OpenCode SDK client for AI observation generation
+  setOpencodeClient(client);
+  
   await client.app.log({
     body: {
       service: 'opencode-mem',
       level: 'info',
-      message: 'MemPlugin initialized, registering hooks...',
+      message: 'MemPlugin initialized with OpenCode SDK integration',
     },
   });
 
@@ -96,31 +99,37 @@ export const MemPlugin: Plugin = async ({ project, client, directory }: PluginCo
       for (const f of filesRead) sessionFilesRead[sid]?.add(f);
       for (const f of filesModified) sessionFilesEdited[sid]?.add(f);
 
-        // Try AI observation generation first if available
-        let obsData: ParsedObservation | null = null;
-        
-        if (isAIObservationAvailable()) {
-          const toolExecution: ToolExecution = {
-            tool: toolName,
-            input: toolInput,
-            output: toolResult,
-            timestamp: new Date().toISOString(),
-            workdir: directory,
+      // Try AI observation generation via OpenCode SDK
+      let obsData: ObservationSchema | null = null;
+      
+      if (isSDKAvailable()) {
+        obsData = await generateObservationViaSDK(sid, {
+          tool: toolName,
+          input: toolInput,
+          output: toolResult,
+          workdir: directory,
+        });
+      }
+      
+      // Fallback to rule-based generation if SDK unavailable or AI failed
+      if (!obsData) {
+        const type = classifyTool(toolName, toolInput, toolResult);
+        const ruleBasedObs = generateObservation(toolName, toolInput, toolResult, type, sid);
+        if (ruleBasedObs) {
+          obsData = {
+            type: ruleBasedObs.type,
+            title: ruleBasedObs.title,
+            subtitle: ruleBasedObs.subtitle,
+            narrative: ruleBasedObs.narrative,
+            facts: ruleBasedObs.facts,
+            concepts: ruleBasedObs.concepts,
+            filesRead: ruleBasedObs.filesRead,
+            filesModified: ruleBasedObs.filesModified,
           };
-
-          // Fallback to rule-based generation if AI fails
-          const fallback = () => {
-            const ruleBasedObs = generateObservation(toolName, toolInput, toolResult, 'discovery', sid);
-            return ruleBasedObs as any; // Type coercion for fallback
-          };
-          obsData = await generateAIObservation(toolExecution, fallback);
-        } else {
-          // Use rule-based observation generation
-          const type = classifyTool(toolName, toolInput, toolResult);
-          obsData = generateObservation(toolName, toolInput, toolResult, type, sid) as any;
         }
+      }
 
-      if (obsData && !obsData.skip) {
+      if (obsData) {
         const obs = {
           type: obsData.type || 'discovery',
           title: obsData.title || '',
@@ -177,37 +186,38 @@ export const MemPlugin: Plugin = async ({ project, client, directory }: PluginCo
           learned: `${filesEdited.length} files edited: ${filesEdited.slice(0, 5).join(', ')}`,
           completed: `${filesEdited.length} files edited`,
           nextSteps: '',
+          notes: '',
           filesRead,
           filesEdited,
           timestamp: new Date().toISOString(),
         };
 
-        // Try AI summary generation if available
+        // Try AI summary generation via OpenCode SDK
         let summaryContent = defaultSummary;
 
-        if (isAIObservationAvailable()) {
-          // Collect observations for this session
-          const sessionObsDir = `${directory}/observations`;
-          let observations: string[] = [];
+        if (isSDKAvailable()) {
+          // Collect recent observations for this session
+          const sessionObsDir = `${memDir}/observations`;
+          let recentObservations: string[] = [];
           try {
             const fs = await import('fs');
             if (fs.existsSync(sessionObsDir)) {
               const files = fs.readdirSync(sessionObsDir);
-              observations = files
+              recentObservations = files
                 .filter(f => f.endsWith('.md'))
-                .slice(-5) // Get last 5 observations
-                .map(f => `- ${f.replace('.md', '')}`);
+                .slice(-5)
+                .map(f => f.replace('.md', '').replace(/^\d+-/, '').replace('-', ' '));
             }
           } catch (e) {
             // Ignore errors reading observations
           }
 
-          const aiSummary = await generateAISummary({
+          const aiSummary = await generateSessionSummaryViaSDK(sid, {
             userRequest: userPrompt,
             toolsUsed: [],
             filesRead,
             filesModified: filesEdited,
-            observations,
+            recentObservations,
           });
 
           if (aiSummary) {
@@ -219,6 +229,7 @@ export const MemPlugin: Plugin = async ({ project, client, directory }: PluginCo
               learned: aiSummary.learned || `${filesEdited.length} files edited`,
               completed: aiSummary.completed || `${filesEdited.length} files modified`,
               nextSteps: aiSummary.nextSteps || '',
+              notes: aiSummary.notes || '',
               filesRead,
               filesEdited,
               timestamp: new Date().toISOString(),

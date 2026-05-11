@@ -18,5 +18,8 @@
     "esbuild": "^0.28.0",
     "typescript": "^5.9.3"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "@opencode-ai/sdk": "^1.14.48"
+  }
 }
