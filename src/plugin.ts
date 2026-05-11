@@ -3,6 +3,7 @@ import { classifyTool, isTrivial, generateObservation, extractFiles } from './ut
 import { buildContext } from './context/inject.js';
 import { searchMemories } from './search/search.js';
 import { setOpencodeClient, isSDKAvailable, generateObservationViaSDK, generateSessionSummaryViaSDK } from './sdk/client.js';
+import { setLoggerClient } from './utils/logger.js';
 import type { ObservationSchema, SessionSummarySchema } from './sdk/observer.js';
 import { type Plugin, type PluginInput, tool } from '@opencode-ai/plugin';
 import { z } from 'zod';
@@ -12,8 +13,9 @@ const sessionFilesEdited: Record<string, Set<string>> = {};
 const sessionUserPrompt: Record<string, string> = {};
 
 export const MemPlugin: Plugin = async ({ project, client, directory }: PluginInput) => {
-  // Set OpenCode SDK client for AI observation generation
+  // Set OpenCode SDK client for AI observation generation and logging
   setOpencodeClient(client);
+  setLoggerClient(client);
   
   await client.app.log({
     body: {
@@ -55,46 +57,21 @@ export const MemPlugin: Plugin = async ({ project, client, directory }: PluginIn
       for (const f of filesRead) sessionFilesRead[sid]?.add(f);
       for (const f of filesModified) sessionFilesEdited[sid]?.add(f);
 
-      // Try AI observation generation via OpenCode SDK
-      let obsData: ObservationSchema | null = null;
+      // Fire and forget - don't wait for AI analysis
+      // Use rule-based observation immediately, AI updates asynchronously
+      const type = classifyTool(toolName, toolInput, toolResult);
+      const ruleBasedObs = generateObservation(toolName, toolInput, toolResult, type, sid);
       
-      if (isSDKAvailable()) {
-        obsData = await generateObservationViaSDK(sid, {
-          tool: toolName,
-          input: toolInput,
-          output: toolResult,
-          workdir: directory,
-        });
-      }
-      
-      // Fallback to rule-based generation if SDK unavailable or AI failed
-      if (!obsData) {
-        const type = classifyTool(toolName, toolInput, toolResult);
-        const ruleBasedObs = generateObservation(toolName, toolInput, toolResult, type, sid);
-        if (ruleBasedObs) {
-          obsData = {
-            type: ruleBasedObs.type,
-            title: ruleBasedObs.title,
-            subtitle: ruleBasedObs.subtitle,
-            narrative: ruleBasedObs.narrative,
-            facts: ruleBasedObs.facts,
-            concepts: ruleBasedObs.concepts,
-            filesRead: ruleBasedObs.filesRead,
-            filesModified: ruleBasedObs.filesModified,
-          };
-        }
-      }
-
-      if (obsData) {
+      if (ruleBasedObs) {
         const obs = {
-          type: obsData.type || 'discovery',
-          title: obsData.title || '',
-          subtitle: obsData.subtitle || '',
-          narrative: obsData.narrative || '',
-          facts: obsData.facts || [],
-          concepts: obsData.concepts || [],
-          filesRead: [...(obsData.filesRead || []), ...filesRead],
-          filesModified: [...(obsData.filesModified || []), ...filesModified],
+          type: ruleBasedObs.type,
+          title: ruleBasedObs.title,
+          subtitle: ruleBasedObs.subtitle,
+          narrative: ruleBasedObs.narrative,
+          facts: ruleBasedObs.facts,
+          concepts: ruleBasedObs.concepts,
+          filesRead: [...ruleBasedObs.filesRead, ...filesRead],
+          filesModified: [...ruleBasedObs.filesModified, ...filesModified],
           sessionId: sid,
           timestamp: new Date().toISOString(),
         };
@@ -108,6 +85,24 @@ export const MemPlugin: Plugin = async ({ project, client, directory }: PluginIn
             level: 'debug',
             message: `Captured observation #${result.id}: ${obs.title}`,
           },
+        });
+      }
+
+      // Start AI analysis asynchronously (fire and forget)
+      if (isSDKAvailable()) {
+        generateObservationViaSDK(sid, {
+          tool: toolName,
+          input: toolInput,
+          output: toolResult,
+          workdir: directory,
+        }).catch(err => {
+          client.app.log({
+            body: {
+              service: 'opencode-mem',
+              level: 'warn',
+              message: `AI analysis failed: ${err}`,
+            },
+          });
         });
       }
     },

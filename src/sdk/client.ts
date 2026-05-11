@@ -18,6 +18,7 @@ import {
 } from './observer.js';
 
 let opencodeClient: any = null;
+let observerSessionId: string | null = null;
 
 /**
  * Initialize OpenCode SDK client
@@ -37,6 +38,59 @@ export async function initializeOpencodeClient(): Promise<any> {
   } catch (error) {
     logger.warn('SDK_CLIENT', `Failed to initialize OpenCode client: ${error}`);
     return null;
+  }
+}
+
+/**
+ * Get or create an observer session for background analysis
+ * This session is separate from user sessions to avoid queueing
+ */
+async function getOrCreateObserverSession(workdir?: string): Promise<string | null> {
+  const client = getOpencodeClient();
+  if (!client) return null;
+
+  // Reuse existing observer session
+  if (observerSessionId) {
+    return observerSessionId;
+  }
+
+  try {
+    const result = await client.session.create({
+      body: {
+        title: 'opencode-mem-observer',
+      },
+      query: {
+        directory: workdir,
+      },
+    });
+
+    if (result?.data?.id) {
+      observerSessionId = result.data.id;
+      logger.info('SDK_CLIENT', `Created observer session: ${observerSessionId}`);
+      return observerSessionId;
+    }
+  } catch (error) {
+    logger.warn('SDK_CLIENT', `Failed to create observer session: ${error}`);
+  }
+
+  return null;
+}
+
+/**
+ * Clean up observer session when plugin shuts down
+ */
+export async function cleanupObserverSession(): Promise<void> {
+  const client = getOpencodeClient();
+  if (!client || !observerSessionId) return;
+
+  try {
+    await client.session.delete({
+      path: { id: observerSessionId },
+    });
+    logger.info('SDK_CLIENT', `Deleted observer session: ${observerSessionId}`);
+    observerSessionId = null;
+  } catch (error) {
+    logger.warn('SDK_CLIENT', `Failed to delete observer session: ${error}`);
   }
 }
 
@@ -81,10 +135,18 @@ export async function generateObservationViaSDK(
       toolName: toolExecution.tool,
     });
 
+    // Get or create observer session (separate from user session)
+    const observerId = await getOrCreateObserverSession(toolExecution.workdir);
+    if (!observerId) {
+      logger.warn('SDK_CLIENT', 'Could not create observer session, falling back to rule-based');
+      return null;
+    }
+
     const prompt = buildObservationPrompt(toolExecution);
 
-    const result = await client.session.prompt({
-      path: { id: sessionId },
+    // Use promptAsync to avoid blocking user's session
+    const result = await client.session.promptAsync({
+      path: { id: observerId },
       body: {
         parts: [{ type: 'text', text: prompt }],
         outputFormat: {
@@ -94,10 +156,32 @@ export async function generateObservationViaSDK(
         },
         noReply: false,
       },
+      query: {
+        directory: toolExecution.workdir,
+      },
+    });
+
+    // promptAsync returns 204, so we need to wait and poll for result
+    // For now, fall back to synchronous prompt with observer session
+    // TODO: Implement polling mechanism for async results
+    const syncResult = await client.session.prompt({
+      path: { id: observerId },
+      body: {
+        parts: [{ type: 'text', text: prompt }],
+        outputFormat: {
+          type: 'json_schema',
+          schema: observationJsonSchema,
+          retryCount: 2,
+        },
+        noReply: false,
+      },
+      query: {
+        directory: toolExecution.workdir,
+      },
     });
 
     // Extract structured output from response
-    const structuredOutput = result?.data?.info?.structured_output;
+    const structuredOutput = syncResult?.data?.info?.structured_output;
     if (!structuredOutput) {
       logger.warn('SDK_CLIENT', 'No structured output in AI response');
       return null;
@@ -146,10 +230,17 @@ export async function generateSessionSummaryViaSDK(
   try {
     logger.debug('SDK_CLIENT', 'Generating session summary');
 
+    // Get or create observer session (separate from user session)
+    const observerId = await getOrCreateObserverSession();
+    if (!observerId) {
+      logger.warn('SDK_CLIENT', 'Could not create observer session');
+      return null;
+    }
+
     const prompt = buildSessionSummaryPrompt(sessionInfo);
 
     const result = await client.session.prompt({
-      path: { id: sessionId },
+      path: { id: observerId },
       body: {
         parts: [{ type: 'text', text: prompt }],
         outputFormat: {

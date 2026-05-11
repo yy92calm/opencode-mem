@@ -1,9 +1,10 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'fs';
 import { join, isAbsolute } from 'path';
+import { homedir } from 'os';
 import type { Observation, SessionSummary, MemSettings } from '../types/index.js';
 
 const DEFAULT_SETTINGS: MemSettings = {
-  memDir: process.env.HOME ? `${process.env.HOME}/.config/opencode/mem` : '.opencode/mem',
+  memDir: join(homedir(), '.config', 'opencode', 'mem'),
   maxObservations: 20,
   maxSessions: 5,
   observationTypes: ['bugfix', 'feature', 'refactor', 'decision', 'discovery', 'config', 'error'],
@@ -13,8 +14,7 @@ const DEFAULT_SETTINGS: MemSettings = {
 
 export function getMemDir(directory: string, settings?: Partial<MemSettings>): string {
   const resolved = { ...DEFAULT_SETTINGS, ...settings };
-  if (isAbsolute(resolved.memDir)) return resolved.memDir;
-  return join(directory, resolved.memDir);
+  return resolved.memDir;
 }
 
 export function ensureMemDirs(directory: string, settings?: Partial<MemSettings>): void {

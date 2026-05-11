@@ -21,6 +21,8 @@
            ↓
     判断是否值得记录（过滤 trivial 操作）
            ↓
+    创建独立观察会话（避免阻塞用户会话）
+           ↓
     调用 OpenCode SDK session.prompt()
     使用 JSON Schema 结构化输出
            ↓
@@ -32,8 +34,13 @@
            ↓
     写入 ~/.config/opencode/mem/observations/*.md
            ↓
-    更新 FTS5 搜索索引
+    更新 INDEX.md 索引
 ```
+
+**关键设计**：
+- 使用独立观察会话，AI 分析不阻塞用户会话消息队列
+- 日志通过 SDK 发送到日志系统，不干扰对话框
+- 记忆存储在全局目录，跨项目共享
 
 ## 安装
 
@@ -174,6 +181,14 @@ npm run install:opencode  # 安装到 OpenCode
 ```
 
 插件必须是单文件，因此用 esbuild 打包成 `dist/opencode-mem.bundle.js`。
+
+## 注意事项
+
+- **Fire-and-forget 分析**：规则生成立即保存，AI 分析异步后台运行，不阻塞用户会话
+- **独立观察会话**：AI 分析使用独立会话，插件生命周期内复用，重启后自动重建
+- **全局记忆目录**：所有项目共享 `~/.config/opencode/mem/` 目录
+- **日志系统**：插件日志通过 SDK 发送，不在对话中显示
+- **重启生效**：安装或更新后需要重启 OpenCode
 
 ## 许可证
 
