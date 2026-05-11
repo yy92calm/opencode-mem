@@ -3,22 +3,19 @@
   "version": "1.0.0",
   "description": "Persistent memory plugin for OpenCode — context across sessions via Markdown files",
   "type": "module",
-  "main": "dist/plugin.js",
-  "types": "dist/plugin.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/plugin.d.ts",
-      "import": "./dist/plugin.js"
-    }
-  },
+  "main": "dist/opencode-mem.bundle.js",
   "scripts": {
     "build": "tsc",
+    "bundle": "esbuild src/plugin.ts --bundle --outfile=dist/opencode-mem.bundle.js --platform=node --format=esm --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\"",
+    "build:all": "npm run build && npm run bundle",
     "dev": "tsc --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "install:opencode": "node scripts/install-opencode.js",
+    "test": "npx tsx tests/test.ts"
   },
-
   "devDependencies": {
     "@types/node": "^25.6.2",
+    "esbuild": "^0.28.0",
     "typescript": "^5.9.3"
   },
   "license": "MIT"

@@ -63,39 +63,56 @@
 
 ## 安装
 
-### 方式一：npm 插件（推荐）
+### 前置要求
 
-在 `opencode.json` 中添加：
+- Node.js >= 20.0.0
+- npm 或 bun
 
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-mem"]
-}
+### 方式一：一键安装（推荐）
+
+```bash
+# 克隆项目
+git clone https://github.com/yy92calm/opencode-mem.git
+cd opencode-mem
+
+# 安装依赖并打包
+npm install
+
+# 一键安装到 OpenCode
+npm run install:opencode
 ```
 
-### 方式二：本地插件
+这会自动：
+1. 安装依赖
+2. 使用 esbuild 打包成单文件
+3. 复制插件到 `~/.config/opencode/plugins/`
+4. 复制技能到 `~/.config/opencode/skills/`
 
-将构建后的插件复制到项目：
+### 方式二：手动安装
+
+```bash
+# 1. 安装依赖
+npm install
+
+# 2. 构建并打包
+npm run build:all
+
+# 3. 安装插件（全局）
+mkdir -p ~/.config/opencode/plugins
+cp dist/opencode-mem.bundle.js ~/.config/opencode/plugins/opencode-mem.js
+
+# 4. 安装技能（可选）
+mkdir -p ~/.config/opencode/skills
+cp -r skills/mem-* ~/.config/opencode/skills/
+```
+
+### 方式三：项目级插件
+
+将打包后的插件放在项目的 `.opencode/plugins/` 目录：
 
 ```bash
 mkdir -p .opencode/plugins
-cp dist/plugin.js .opencode/plugins/opencode-mem.js
-```
-
-或全局安装：
-
-```bash
-mkdir -p ~/.config/opencode/plugins
-cp dist/plugin.js ~/.config/opencode/plugins/opencode-mem.js
-```
-
-### 方式三：仅安装技能
-
-如果只需要技能而不需要插件钩子：
-
-```bash
-cp -r skills/mem-* ~/.config/opencode/skills/
+cp dist/opencode-mem.bundle.js .opencode/plugins/opencode-mem.js
 ```
 
 ## 钩子（Hooks）
@@ -197,17 +214,68 @@ JWT 中间件没有检查传入令牌中的 `exp` 声明...
 ## 开发
 
 ```bash
+# 安装依赖
 npm install
+
+# 类型检查
+npm run typecheck
+
+# 构建 TypeScript
 npm run build
+
+# 打包成单文件（必须）
+npm run bundle
+
+# 构建 + 打包
+npm run build:all
+
+# 安装到 OpenCode
+npm run install:opencode
+
+# 运行测试
+npm run test
 ```
 
-然后在 `opencode.json` 中添加：
+### 重要说明
 
-```json
-{
-  "plugin": ["./path/to/opencode-mem"]
-}
+OpenCode 插件系统要求插件必须是**单文件**，因此需要使用 esbuild 打包：
+
+```bash
+npm run bundle
 ```
+
+生成的 `dist/opencode-mem.bundle.js` 才是实际加载的文件。
+
+## 验证安装
+
+重启 OpenCode 后，检查日志确认插件加载：
+
+```bash
+# 查看最新日志
+ls -t ~/.local/share/opencode/log/*.log | head -1 | xargs grep -i "opencode-mem\|mem-search\|mem-capture\|mem-context"
+```
+
+成功加载的标志：
+```
+INFO  service=plugin path=.../opencode-mem.js loading plugin
+INFO  service=tool.registry status=completed mem-search
+INFO  service=tool.registry status=completed mem-capture
+INFO  service=tool.registry status=completed mem-context
+```
+
+## 记忆存储
+
+记忆文件存储在项目根目录的 `.opencode/mem/` 下：
+
+```
+<项目>/.opencode/mem/
+├── INDEX.md              # 自动生成的索引
+├── observations/         # 观察记录
+├── sessions/             # 会话摘要
+└── concepts/             # 概念文档
+```
+
+首次使用时目录会自动创建。
 
 ## 隐私
 
