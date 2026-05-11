@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.opencode/mem/
+*.log
+.DS_Store
