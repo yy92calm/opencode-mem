@@ -4,58 +4,14 @@ import { buildContext } from './context/inject.js';
 import { searchMemories } from './search/search.js';
 import { setOpencodeClient, isSDKAvailable, generateObservationViaSDK, generateSessionSummaryViaSDK } from './sdk/client.js';
 import type { ObservationSchema, SessionSummarySchema } from './sdk/observer.js';
-
-interface PluginContext {
-  project: { name: string; path: string };
-  directory: string;
-  worktree: string;
-  client: { app: { log: (args: { body: { service: string; level: string; message: string } }) => Promise<void> } };
-  $: unknown;
-}
-
-interface ToolInput {
-  tool?: string;
-  name?: string;
-  input?: Record<string, unknown>;
-  args?: Record<string, unknown>;
-  session?: { id: string };
-}
-
-interface ToolOutput {
-  result?: string;
-  output?: string;
-  args?: Record<string, unknown>;
-}
-
-type ToolHookFn = (input: ToolInput, output: ToolOutput) => Promise<void>;
-
-interface EventData {
-  type: string;
-  data?: unknown;
-}
-
-type EventHookFn = (ctx: { event: EventData }) => Promise<void>;
-
-interface ToolDef {
-  description: string;
-  parameters: Record<string, unknown>;
-  execute: (args: Record<string, unknown>) => Promise<string>;
-}
-
-interface PluginResult {
-  'tool.execute.before'?: ToolHookFn;
-  'tool.execute.after'?: ToolHookFn;
-  event?: EventHookFn;
-  tool?: Record<string, ToolDef>;
-}
-
-type Plugin = (ctx: PluginContext) => Promise<PluginResult>;
+import { type Plugin, type PluginInput, tool } from '@opencode-ai/plugin';
+import { z } from 'zod';
 
 const sessionFilesRead: Record<string, Set<string>> = {};
 const sessionFilesEdited: Record<string, Set<string>> = {};
 const sessionUserPrompt: Record<string, string> = {};
 
-export const MemPlugin: Plugin = async ({ project, client, directory }: PluginContext) => {
+export const MemPlugin: Plugin = async ({ project, client, directory }: PluginInput) => {
   // Set OpenCode SDK client for AI observation generation
   setOpencodeClient(client);
   
@@ -70,16 +26,16 @@ export const MemPlugin: Plugin = async ({ project, client, directory }: PluginCo
   const memDir = getMemDir(directory);
   ensureMemDirs(directory);
 
-  const sessionId = project?.path || directory;
+  const sessionId = directory; // 使用 directory 作为 session ID
   if (!sessionFilesRead[sessionId]) sessionFilesRead[sessionId] = new Set();
   if (!sessionFilesEdited[sessionId]) sessionFilesEdited[sessionId] = new Set();
 
   return {
     'tool.execute.after': async (input, output) => {
-      const toolName = input?.tool || input?.name || '';
-      const toolInput = input?.input || input?.args || {};
-      const toolResult = output?.result || output?.output || '';
-      const sid = input?.session?.id || sessionId;
+      const toolName = input.tool;
+      const toolInput = input.args;
+      const toolResult = output.output;
+      const sid = input.sessionID || sessionId;
 
       await client.app.log({
         body: {
@@ -180,7 +136,7 @@ export const MemPlugin: Plugin = async ({ project, client, directory }: PluginCo
         // Default summary structure
         const defaultSummary = {
           sessionId: sid,
-          project: project?.name || directory,
+          project: project?.id || directory,
           request: userPrompt.substring(0, 200),
           investigated: 'See observations for details.',
           learned: `${filesEdited.length} files edited: ${filesEdited.slice(0, 5).join(', ')}`,
@@ -223,7 +179,7 @@ export const MemPlugin: Plugin = async ({ project, client, directory }: PluginCo
           if (aiSummary) {
             summaryContent = {
               sessionId: sid,
-              project: project?.name || directory,
+              project: project?.id || directory,
               request: aiSummary.request || userPrompt.substring(0, 200),
               investigated: aiSummary.investigated || 'See observations for details.',
               learned: aiSummary.learned || `${filesEdited.length} files edited`,
@@ -254,92 +210,77 @@ export const MemPlugin: Plugin = async ({ project, client, directory }: PluginCo
       }
     },
 
-    tool: {
-      'mem-search': {
+tool: {
+      'mem-search': tool({
         description: 'Search persistent memory observations from past sessions',
-        parameters: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Search query' },
-            type: { type: 'string', description: 'Filter by observation type' },
-            limit: { type: 'number', description: 'Max results', default: 10 },
-          },
-          required: ['query'],
+        args: {
+          query: z.string().describe('Search query'),
+          type: z.string().optional().describe('Filter by observation type'),
+          limit: z.number().optional().default(10).describe('Max results'),
         },
-        execute: async (args: Record<string, unknown>) => {
-          const results = searchMemories(directory, String(args.query || ''), {
-            type: args.type ? String(args.type) : undefined,
-            limit: typeof args.limit === 'number' ? args.limit : 10,
+        execute: async (args, context) => {
+          const results = searchMemories(context.directory, args.query, {
+            type: args.type,
+            limit: args.limit ?? 10,
           });
           return JSON.stringify(results, null, 2);
         },
-      },
-      'mem-capture': {
+      }),
+      'mem-capture': tool({
         description: 'Capture an observation to persistent memory',
-        parameters: {
-          type: 'object',
-          properties: {
-            type: { type: 'string', description: 'Observation type: bugfix|feature|refactor|decision|discovery|config|error' },
-            title: { type: 'string', description: 'Short title' },
-            subtitle: { type: 'string', description: 'One-line summary' },
-            narrative: { type: 'string', description: 'Detailed description' },
-            facts: { type: 'array', items: { type: 'string' }, description: 'Key facts' },
-            concepts: { type: 'array', items: { type: 'string' }, description: 'Related concepts' },
-            filesRead: { type: 'array', items: { type: 'string' }, description: 'Files read' },
-            filesModified: { type: 'array', items: { type: 'string' }, description: 'Files modified' },
-          },
-          required: ['type', 'title', 'narrative'],
+        args: {
+          type: z.string().describe('Observation type: bugfix|feature|refactor|decision|discovery|config|error'),
+          title: z.string().describe('Short title'),
+          subtitle: z.string().optional().describe('One-line summary'),
+          narrative: z.string().describe('Detailed description'),
+          facts: z.array(z.string()).optional().describe('Key facts'),
+          concepts: z.array(z.string()).optional().describe('Related concepts'),
+          filesRead: z.array(z.string()).optional().describe('Files read'),
+          filesModified: z.array(z.string()).optional().describe('Files modified'),
         },
-        execute: async (args: Record<string, unknown>) => {
+        execute: async (args, context) => {
           const obs = {
-            type: String(args.type || 'discovery'),
-            title: String(args.title || ''),
-            subtitle: String(args.subtitle || ''),
-            narrative: String(args.narrative || ''),
-            facts: Array.isArray(args.facts) ? args.facts as string[] : [],
-            concepts: Array.isArray(args.concepts) ? args.concepts as string[] : [],
-            filesRead: Array.isArray(args.filesRead) ? args.filesRead as string[] : [],
-            filesModified: Array.isArray(args.filesModified) ? args.filesModified as string[] : [],
-            sessionId,
+            type: args.type,
+            title: args.title,
+            subtitle: args.subtitle ?? '',
+            narrative: args.narrative,
+            facts: args.facts ?? [],
+            concepts: args.concepts ?? [],
+            filesRead: args.filesRead ?? [],
+            filesModified: args.filesModified ?? [],
+            sessionId: context.sessionID,
             timestamp: new Date().toISOString(),
           };
-          const result = writeObservation(directory, obs);
-          updateIndex(directory);
+          const result = writeObservation(context.directory, obs);
+          updateIndex(context.directory);
           return `Observation #${result.id} saved: ${result.filepath}`;
         },
-      },
-      'mem-context': {
+      }),
+      'mem-context': tool({
         description: 'Get memory context from past sessions for the current project',
-        parameters: {
-          type: 'object',
-          properties: {
-            maxObservations: { type: 'number', description: 'Max observations to include', default: 15 },
-            maxSessions: { type: 'number', description: 'Max sessions to include', default: 3 },
-          },
+        args: {
+          maxObservations: z.number().optional().default(15).describe('Max observations to include'),
+          maxSessions: z.number().optional().default(3).describe('Max sessions to include'),
         },
-        execute: async (args: Record<string, unknown>) => {
-          return buildContext(directory, {
-            maxObservations: typeof args.maxObservations === 'number' ? args.maxObservations : 15,
-            sessionCount: typeof args.maxSessions === 'number' ? args.maxSessions : 3,
+        execute: async (args, context) => {
+          return buildContext(context.directory, {
+            maxObservations: args.maxObservations ?? 15,
+            sessionCount: args.maxSessions ?? 3,
           }) || 'No memory context available.';
         },
-      },
-      'mem-summarize': {
+      }),
+      'mem-summarize': tool({
         description: 'Generate a summary of the current session and save it to memory',
-        parameters: {
-          type: 'object',
-          properties: {
-            focus: { type: 'string', description: 'What to focus the summary on (e.g., "bugs fixed", "decisions made")' },
-          },
+        args: {
+          focus: z.string().optional().describe('What to focus the summary on'),
         },
-        execute: async (args: Record<string, unknown>) => {
-          const sid = sessionId;
+        execute: async (args, context) => {
+          const sid = context.sessionID;
           const filesRead = Array.from(sessionFilesRead[sid] || []);
           const filesEdited = Array.from(sessionFilesEdited[sid] || []);
           const userPrompt = sessionUserPrompt[sid] || '';
-          const focus = args.focus ? String(args.focus) : 'general progress';
+          const focus = args.focus ?? 'general progress';
 
-          // Simple summary (AI summarization deferred for now)
           const summary = `## Session Summary (${focus})
 
 **Request**: ${userPrompt || 'N/A'}
@@ -365,15 +306,11 @@ See observations for detailed changes.`;
             timestamp: new Date().toISOString(),
           };
 
-          try {
-            const obsResult = writeObservation(directory, obs);
-            updateIndex(directory);
-            return `Session summary saved as observation #${obsResult.id}`;
-          } catch (error) {
-            return `Failed to save summary: ${error}`;
-          }
+          const obsResult = writeObservation(context.directory, obs);
+          updateIndex(context.directory);
+          return `Session summary saved as observation #${obsResult.id}`;
         },
-      },
+      }),
     },
   };
 };
