@@ -3,7 +3,7 @@ import { join, isAbsolute } from 'path';
 import type { Observation, SessionSummary, MemSettings } from '../types/index.js';
 
 const DEFAULT_SETTINGS: MemSettings = {
-  memDir: '.opencode/mem',
+  memDir: process.env.HOME ? `${process.env.HOME}/.config/opencode/mem` : '.opencode/mem',
   maxObservations: 20,
   maxSessions: 5,
   observationTypes: ['bugfix', 'feature', 'refactor', 'decision', 'discovery', 'config', 'error'],

@@ -56,10 +56,11 @@
 
 - **OpenCode 原生插件** — 通过 `opencode.json` 或 `.opencode/plugins/` 加载
 - **生命周期钩子** — `session.created`、`tool.execute.after`、`message.updated`、`session.idle`
-- **自定义工具** — `mem-search`、`mem-capture`、`mem-context`
-- **纯 Markdown 存储** — 所有记忆都是 `.md` 文件，存储在 `.opencode/mem/`
+- **自定义工具** — `mem-search`、`mem-capture`、`mem-context`、`mem-summarize`
+- **AI 驱动观察** — 可选的 Claude AI 自动生成有意义的观察标题和摘要（[详见文档](docs/AI_OBSERVER_PATTERN.md)）
+- **纯 Markdown 存储** — 所有记忆都是 `.md` 文件，存储在 `~/.config/opencode/mem/`
 - **Git 友好** — 可将记忆文件与项目一起提交
-- **零运行时依赖** — 无数据库、无守护进程、无外部服务
+- **零运行时依赖** — 无数据库、无守护进程、无外部服务（可选 Anthropic API）
 
 ## 安装
 
@@ -67,6 +68,7 @@
 
 - Node.js >= 20.0.0
 - npm 或 bun
+- **可选**：`ANTHROPIC_API_KEY` 环境变量（用于 AI 驱动观察生成）
 
 ### 方式一：一键安装（推荐）
 
@@ -80,6 +82,16 @@ npm install
 
 # 一键安装到 OpenCode
 npm run install:opencode
+```
+
+**启用 AI 观察**（可选）：
+
+```bash
+# 设置 Anthropic API 密钥
+export ANTHROPIC_API_KEY="sk-..."
+
+# 或在 ~/.bashrc / ~/.zshrc 中添加
+echo 'export ANTHROPIC_API_KEY="sk-..."' >> ~/.bashrc
 ```
 
 这会自动：
@@ -290,3 +302,11 @@ INFO  service=tool.registry status=completed mem-context
 ## 许可证
 
 MIT
+
+---
+
+## 了解更多
+
+- **[AI Observer Pattern 文档](docs/AI_OBSERVER_PATTERN.md)** — Claude AI 如何生成智能观察
+- **[claude-mem 原项目](https://github.com/thedotmack/claude-mem)** — 灵感来源
+- **[OpenCode 文档](https://opencode.ai/docs)** — 插件系统详解

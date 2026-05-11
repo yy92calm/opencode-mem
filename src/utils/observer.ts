@@ -2,34 +2,19 @@ import type { Observation } from '../types/index.js';
 
 export function classifyTool(tool: string, input: unknown, response: string): string {
   const lowerResponse = response.toLowerCase();
-  const lowerInput = JSON.stringify(input).toLowerCase();
 
+  // Only check for errors if the response actually contains error indicators
   if (lowerResponse.includes('error') || lowerResponse.includes('failed') || lowerResponse.includes('exception')) {
-    return 'error';
+    // Make sure it's actually an error, not just mentioning the word
+    if (lowerResponse.includes('error:') || lowerResponse.includes('failed:') || lowerResponse.includes('exception:')) {
+      return 'error';
+    }
   }
 
-  if (lowerResponse.includes('fix') || lowerResponse.includes('bug') || lowerResponse.includes('issue')) {
-    return 'bugfix';
-  }
+  // Read operations are always discovery
+  if (tool === 'read') return 'discovery';
 
-  if (lowerResponse.includes('decided') || lowerResponse.includes('chose') || lowerResponse.includes('approach')) {
-    return 'decision';
-  }
-
-  switch (tool) {
-    case 'write':
-    case 'edit':
-      if (lowerInput.includes('test') || lowerInput.includes('spec')) return 'feature';
-      if (lowerInput.includes('refactor') || lowerInput.includes('restructure')) return 'refactor';
-      return 'feature';
-    case 'read':
-      return 'discovery';
-    case 'bash':
-      if (lowerInput.includes('npm install') || lowerInput.includes('config')) return 'config';
-      return 'discovery';
-    default:
-      return 'discovery';
-  }
+  return 'discovery';
 }
 
 export function isTrivial(tool: string, input: unknown, response: string): boolean {
@@ -52,13 +37,26 @@ export function generateObservation(
   type: string,
   sessionId: string
 ): Omit<Observation, 'id'> | null {
-  const title = generateTitle(tool, input, response);
-  const subtitle = generateSubtitle(tool, input, response);
+  const inputObj = input as Record<string, unknown>;
+  const filePath = inputObj?.filePath as string || inputObj?.path as string || '';
+  const fileName = filePath ? filePath.split('/').pop() || filePath : '';
+
+  // Generate title based on tool type and context
+  const title = generateTitle(tool, fileName, response, type);
+  
+  // Generate subtitle (one sentence summary)
+  const subtitle = generateSubtitle(tool, fileName, response, type);
+  
+  // Generate narrative with full context
   const narrative = generateNarrative(tool, input, response);
+  
+  // Extract facts and concepts
   const facts = extractFacts(response);
   const concepts = extractConcepts(input, response);
-  const filesRead = extractFiles(tool, input, 'read');
-  const filesModified = extractFiles(tool, input, 'modified');
+  
+  // Track files
+  const filesRead = tool === 'read' && filePath ? [filePath] : [];
+  const filesModified = (tool === 'write' || tool === 'edit') && filePath ? [filePath] : [];
 
   return {
     type,
@@ -74,39 +72,105 @@ export function generateObservation(
   };
 }
 
-function generateTitle(tool: string, input: unknown, response: string): string {
-  const titleMatch = response.match(/(?:fixed|added|created|modified|removed|discovered)\s+(.+)/i);
-  if (titleMatch) return titleMatch[1].substring(0, 80);
-
-  const inputStr = JSON.stringify(input);
-  const fileMatch = inputStr.match(/(?:path|file)["\s:]+([^"'\s,]+)/);
-  if (fileMatch) return `${tool}: ${fileMatch[1].split('/').pop()}`;
-
-  return `${tool} operation`;
+function generateTitle(tool: string, fileName: string, response: string, type: string): string {
+  // Focus on WHAT was learned/built, not WHAT was done
+  switch (tool) {
+    case 'read':
+      if (fileName) {
+        return `Explored: ${fileName}`;
+      }
+      return 'Codebase exploration';
+    case 'write':
+      if (fileName) {
+        return `Created: ${fileName}`;
+      }
+      return 'File created';
+    case 'edit':
+      if (fileName) {
+        return `Modified: ${fileName}`;
+      }
+      return 'File modified';
+    case 'bash':
+      // For bash, check response for common commands
+      if (response.toLowerCase().includes('node_modules') || response.includes('added') || response.includes('up to date')) {
+        return 'Dependencies installed';
+      }
+      if (response.includes('commit') || response.includes('branch') || response.includes('On branch')) {
+        return 'Git operation executed';
+      }
+      return `Command executed`;
+    case 'glob':
+      return 'Files discovered';
+    case 'grep':
+      return 'Code search completed';
+    case 'webfetch':
+      return 'Web content fetched';
+    default:
+      return `${tool} operation`;
+  }
 }
 
-function generateSubtitle(tool: string, input: unknown, response: string): string {
-  const sentences = response.split(/[.!?]\s+/);
-  for (const sentence of sentences) {
-    if (sentence.length > 20 && sentence.length < 150) return sentence.trim();
+function generateSubtitle(tool: string, fileName: string, response: string, type: string): string {
+  // One sentence summary of what happened
+  switch (tool) {
+    case 'read':
+      return fileName ? `Read ${fileName} to understand implementation` : 'Explored codebase structure';
+    case 'write':
+      return fileName ? `Created new file ${fileName}` : 'File created';
+    case 'edit':
+      return fileName ? `Modified ${fileName}` : 'File modified';
+    case 'bash':
+      if (response.toLowerCase().includes('npm')) return 'Installed project dependencies';
+      if (response.includes('commit') || response.includes('branch')) return 'Executed git command';
+      return `Command executed successfully`;
+    case 'glob':
+      const fileCount = response.split('\n').filter(line => line.trim()).length;
+      return `Found ${fileCount} matching files`;
+    case 'grep':
+      const matchCount = response.split('\n').filter(line => line.trim()).length;
+      return `Found ${matchCount} matches in search`;
+    case 'webfetch':
+      return 'Retrieved web content successfully';
+    default:
+      return `${tool} completed`;
   }
-  return `${tool} completed successfully`;
 }
 
 function generateNarrative(tool: string, input: unknown, response: string): string {
-  const inputStr = typeof input === 'string' ? input : JSON.stringify(input, null, 2);
-  return `## Tool: ${tool}
+  const inputObj = input as Record<string, unknown>;
+  const filePath = inputObj?.filePath as string || inputObj?.path as string || '';
+  const command = inputObj?.command as string || '';
 
-### Input
-\`\`\`
-${inputStr.substring(0, 500)}${inputStr.length > 500 ? '...' : ''}
-\`\`\`
+  let narrative = '';
 
-### Response
-\`\`\`
-${response.substring(0, 1000)}${response.length > 1000 ? '...' : ''}
-\`\`\`
-`;
+  if (tool === 'read' && filePath) {
+    narrative = `## File Exploration\n\n**File**: \`${filePath}\`\n\n`;
+    // Extract key content from response (first 500 chars)
+    const content = response.replace(/<[^>]+>/g, '').trim();
+    if (content.length > 100) {
+      narrative += `**Content Summary**:\n\`\`\`\n${content.substring(0, 500)}${content.length > 500 ? '...' : ''}\n\`\`\`\n`;
+    }
+  } else if ((tool === 'write' || tool === 'edit') && filePath) {
+    narrative = `## File Modification\n\n**File**: \`${filePath}\`\n\n`;
+    const content = response.replace(/<[^>]+>/g, '').trim();
+    if (content.length > 100) {
+      narrative += `**Changes**:\n\`\`\`\n${content.substring(0, 500)}${content.length > 500 ? '...' : ''}\n\`\`\`\n`;
+    }
+  } else if (tool === 'bash' && command) {
+    narrative = `## Command Execution\n\n**Command**: \`${command}\`\n\n`;
+    const output = response.replace(/<[^>]+>/g, '').trim();
+    if (output.length > 50) {
+      narrative += `**Output**:\n\`\`\`\n${output.substring(0, 500)}${output.length > 500 ? '...' : ''}\n\`\`\`\n`;
+    }
+  } else {
+    narrative = `## Tool Execution\n\n**Tool**: ${tool}\n\n`;
+    const output = response.replace(/<[^>]+>/g, '').trim();
+    if (output.length > 50) {
+      narrative += `\`\`\`\n${output.substring(0, 500)}${output.length > 500 ? '...' : ''}\n\`\`\`\n`;
+    }
+  }
+
+  return narrative;
 }
 
 function extractFacts(response: string): string[] {
@@ -141,23 +205,15 @@ function extractConcepts(input: unknown, response: string): string[] {
 
 export function extractFiles(tool: string, input: unknown, mode: 'read' | 'modified'): string[] {
   const files: string[] = [];
-  const inputStr = JSON.stringify(input);
+  const inputObj = input as Record<string, unknown>;
+  const filePath = inputObj?.filePath as string || inputObj?.path as string || '';
 
-  if (tool === 'read' && mode === 'read') {
-    const pathMatch = inputStr.match(/(?:path|file)["\s:]+([^"'\s,]+)/);
-    if (pathMatch) files.push(pathMatch[1]);
+  if (tool === 'read' && mode === 'read' && filePath) {
+    files.push(filePath);
   }
 
-  if ((tool === 'write' || tool === 'edit') && mode === 'modified') {
-    const pathMatch = inputStr.match(/(?:path|file)["\s:]+([^"'\s,]+)/);
-    if (pathMatch) files.push(pathMatch[1]);
-  }
-
-  const fileMatches = inputStr.match(/[\w./-]+\.(ts|js|tsx|jsx|py|go|rs|md|json|yaml|yml)/g);
-  if (fileMatches) {
-    for (const f of fileMatches) {
-      if (!files.includes(f)) files.push(f);
-    }
+  if ((tool === 'write' || tool === 'edit') && mode === 'modified' && filePath) {
+    files.push(filePath);
   }
 
   return files.slice(0, 10);

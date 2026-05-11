@@ -2,6 +2,8 @@ import { writeObservation, writeSessionSummary, updateIndex, getMemDir, ensureMe
 import { classifyTool, isTrivial, generateObservation, extractFiles } from './utils/observer.js';
 import { buildContext } from './context/inject.js';
 import { searchMemories } from './search/search.js';
+import { generateAIObservation, generateAISummary, isAIObservationAvailable } from './ai/observer.js';
+import type { ToolExecution, ParsedObservation } from './ai/prompts.js';
 
 interface PluginContext {
   project: { name: string; path: string };
@@ -11,20 +13,28 @@ interface PluginContext {
   $: unknown;
 }
 
-interface HookInput {
-  session?: { id: string };
-  tool?: { name: string };
+interface ToolInput {
+  tool?: string;
+  name?: string;
   input?: Record<string, unknown>;
-}
-
-interface HookOutput {
+  args?: Record<string, unknown>;
   session?: { id: string };
-  result?: string;
-  message?: { parts: Array<{ type: string; text?: string; assistant?: boolean }> };
-  system?: string;
 }
 
-type HookFn = (input: HookInput, output: HookOutput) => Promise<void>;
+interface ToolOutput {
+  result?: string;
+  output?: string;
+  args?: Record<string, unknown>;
+}
+
+type ToolHookFn = (input: ToolInput, output: ToolOutput) => Promise<void>;
+
+interface EventData {
+  type: string;
+  data?: unknown;
+}
+
+type EventHookFn = (ctx: { event: EventData }) => Promise<void>;
 
 interface ToolDef {
   description: string;
@@ -33,10 +43,9 @@ interface ToolDef {
 }
 
 interface PluginResult {
-  'session.created'?: HookFn;
-  'tool.execute.after'?: HookFn;
-  'message.updated'?: HookFn;
-  'session.idle'?: HookFn;
+  'tool.execute.before'?: ToolHookFn;
+  'tool.execute.after'?: ToolHookFn;
+  event?: EventHookFn;
   tool?: Record<string, ToolDef>;
 }
 
@@ -47,6 +56,14 @@ const sessionFilesEdited: Record<string, Set<string>> = {};
 const sessionUserPrompt: Record<string, string> = {};
 
 export const MemPlugin: Plugin = async ({ project, client, directory }: PluginContext) => {
+  await client.app.log({
+    body: {
+      service: 'opencode-mem',
+      level: 'info',
+      message: 'MemPlugin initialized, registering hooks...',
+    },
+  });
+
   const memDir = getMemDir(directory);
   ensureMemDirs(directory);
 
@@ -55,44 +72,68 @@ export const MemPlugin: Plugin = async ({ project, client, directory }: PluginCo
   if (!sessionFilesEdited[sessionId]) sessionFilesEdited[sessionId] = new Set();
 
   return {
-    'session.created': async (_input, output) => {
-      const sid = output.session?.id || sessionId;
-      sessionFilesRead[sid] = new Set();
-      sessionFilesEdited[sid] = new Set();
+    'tool.execute.after': async (input, output) => {
+      const toolName = input?.tool || input?.name || '';
+      const toolInput = input?.input || input?.args || {};
+      const toolResult = output?.result || output?.output || '';
+      const sid = input?.session?.id || sessionId;
 
       await client.app.log({
         body: {
           service: 'opencode-mem',
-          level: 'info',
-          message: `Session created, loading memory context from ${memDir}`,
+          level: 'debug',
+          message: `tool.execute.after: tool=${toolName}`,
         },
       });
 
-      const context = buildContext(directory, { maxObservations: 15, sessionCount: 3 });
-      if (context) {
-        output.system = output.system || '';
-        output.system += `\n\n${context}`;
+      if (isTrivial(toolName, toolInput, toolResult)) {
+        return;
       }
-    },
 
-    'tool.execute.after': async (input, output) => {
-      const sid = input.session?.id || sessionId;
-      const toolName = input.tool?.name || '';
-      const toolInput = input.input || {};
-      const toolResult = output?.result || '';
-
-      if (isTrivial(toolName, toolInput, toolResult)) return;
-
-      const filesRead = extractFiles(toolName, toolInput, 'read');
-      const filesModified = extractFiles(toolName, toolInput, 'modified');
+      const filesRead = toolName === 'read' ? extractFiles(toolName, toolInput, 'read') : [];
+      const filesModified = (toolName === 'write' || toolName === 'edit') ? extractFiles(toolName, toolInput, 'modified') : [];
 
       for (const f of filesRead) sessionFilesRead[sid]?.add(f);
       for (const f of filesModified) sessionFilesEdited[sid]?.add(f);
 
-      const type = classifyTool(toolName, toolInput, toolResult);
-      const obs = generateObservation(toolName, toolInput, toolResult, type, sid);
+        // Try AI observation generation first if available
+        let obsData: ParsedObservation | null = null;
+        
+        if (isAIObservationAvailable()) {
+          const toolExecution: ToolExecution = {
+            tool: toolName,
+            input: toolInput,
+            output: toolResult,
+            timestamp: new Date().toISOString(),
+            workdir: directory,
+          };
 
-      if (obs) {
+          // Fallback to rule-based generation if AI fails
+          const fallback = () => {
+            const ruleBasedObs = generateObservation(toolName, toolInput, toolResult, 'discovery', sid);
+            return ruleBasedObs as any; // Type coercion for fallback
+          };
+          obsData = await generateAIObservation(toolExecution, fallback);
+        } else {
+          // Use rule-based observation generation
+          const type = classifyTool(toolName, toolInput, toolResult);
+          obsData = generateObservation(toolName, toolInput, toolResult, type, sid) as any;
+        }
+
+      if (obsData && !obsData.skip) {
+        const obs = {
+          type: obsData.type || 'discovery',
+          title: obsData.title || '',
+          subtitle: obsData.subtitle || '',
+          narrative: obsData.narrative || '',
+          facts: obsData.facts || [],
+          concepts: obsData.concepts || [],
+          filesRead: [...(obsData.filesRead || []), ...filesRead],
+          filesModified: [...(obsData.filesModified || []), ...filesModified],
+          sessionId: sid,
+          timestamp: new Date().toISOString(),
+        };
+
         const result = writeObservation(directory, obs);
         updateIndex(directory);
 
@@ -106,50 +147,100 @@ export const MemPlugin: Plugin = async ({ project, client, directory }: PluginCo
       }
     },
 
-    'message.updated': async (input, output) => {
-      const sid = input.session?.id || sessionId;
-      const parts = output.message?.parts || [];
+    event: async ({ event }) => {
+      if (event.type === 'session.created') {
+        const sid = sessionId;
+        sessionFilesRead[sid] = new Set();
+        sessionFilesEdited[sid] = new Set();
 
-      for (const part of parts) {
-        if (part.type === 'text' && !part.assistant) {
-          sessionUserPrompt[sid] = part.text || '';
-        }
+        await client.app.log({
+          body: {
+            service: 'opencode-mem',
+            level: 'info',
+            message: `Session created, loading memory context from ${memDir}`,
+          },
+        });
       }
-    },
 
-    'session.idle': async (input, _output) => {
-      const sid = input.session?.id || sessionId;
-      const filesRead = Array.from(sessionFilesRead[sid] || []);
-      const filesEdited = Array.from(sessionFilesEdited[sid] || []);
-      const userPrompt = sessionUserPrompt[sid] || '';
+      if (event.type === 'session.idle') {
+        const sid = sessionId;
+        const filesRead = Array.from(sessionFilesRead[sid] || []);
+        const filesEdited = Array.from(sessionFilesEdited[sid] || []);
+        const userPrompt = sessionUserPrompt[sid] || '';
 
-      const summary = {
-        sessionId: sid,
-        project: project?.name || directory,
-        request: userPrompt.substring(0, 200),
-        investigated: 'See observations for details.',
-        learned: '',
-        completed: `${filesEdited.length} files edited: ${filesEdited.slice(0, 5).join(', ')}`,
-        nextSteps: '',
-        filesRead,
-        filesEdited,
-        timestamp: new Date().toISOString(),
-      };
+        // Default summary structure
+        const defaultSummary = {
+          sessionId: sid,
+          project: project?.name || directory,
+          request: userPrompt.substring(0, 200),
+          investigated: 'See observations for details.',
+          learned: `${filesEdited.length} files edited: ${filesEdited.slice(0, 5).join(', ')}`,
+          completed: `${filesEdited.length} files edited`,
+          nextSteps: '',
+          filesRead,
+          filesEdited,
+          timestamp: new Date().toISOString(),
+        };
 
-      writeSessionSummary(directory, summary);
-      updateIndex(directory);
+        // Try AI summary generation if available
+        let summaryContent = defaultSummary;
 
-      await client.app.log({
-        body: {
-          service: 'opencode-mem',
-          level: 'info',
-          message: `Session summary saved for ${sid}`,
-        },
-      });
+        if (isAIObservationAvailable()) {
+          // Collect observations for this session
+          const sessionObsDir = `${directory}/observations`;
+          let observations: string[] = [];
+          try {
+            const fs = await import('fs');
+            if (fs.existsSync(sessionObsDir)) {
+              const files = fs.readdirSync(sessionObsDir);
+              observations = files
+                .filter(f => f.endsWith('.md'))
+                .slice(-5) // Get last 5 observations
+                .map(f => `- ${f.replace('.md', '')}`);
+            }
+          } catch (e) {
+            // Ignore errors reading observations
+          }
 
-      delete sessionFilesRead[sid];
-      delete sessionFilesEdited[sid];
-      delete sessionUserPrompt[sid];
+          const aiSummary = await generateAISummary({
+            userRequest: userPrompt,
+            toolsUsed: [],
+            filesRead,
+            filesModified: filesEdited,
+            observations,
+          });
+
+          if (aiSummary) {
+            summaryContent = {
+              sessionId: sid,
+              project: project?.name || directory,
+              request: aiSummary.request || userPrompt.substring(0, 200),
+              investigated: aiSummary.investigated || 'See observations for details.',
+              learned: aiSummary.learned || `${filesEdited.length} files edited`,
+              completed: aiSummary.completed || `${filesEdited.length} files modified`,
+              nextSteps: aiSummary.nextSteps || '',
+              filesRead,
+              filesEdited,
+              timestamp: new Date().toISOString(),
+            };
+          }
+        }
+
+        writeSessionSummary(directory, summaryContent);
+        updateIndex(directory);
+
+        await client.app.log({
+          body: {
+            service: 'opencode-mem',
+            level: 'info',
+            message: `Session summary saved for ${sid}`,
+          },
+        });
+
+        delete sessionFilesRead[sid];
+        delete sessionFilesEdited[sid];
+        delete sessionUserPrompt[sid];
+      }
     },
 
     tool: {
@@ -220,6 +311,56 @@ export const MemPlugin: Plugin = async ({ project, client, directory }: PluginCo
             maxObservations: typeof args.maxObservations === 'number' ? args.maxObservations : 15,
             sessionCount: typeof args.maxSessions === 'number' ? args.maxSessions : 3,
           }) || 'No memory context available.';
+        },
+      },
+      'mem-summarize': {
+        description: 'Generate a summary of the current session and save it to memory',
+        parameters: {
+          type: 'object',
+          properties: {
+            focus: { type: 'string', description: 'What to focus the summary on (e.g., "bugs fixed", "decisions made")' },
+          },
+        },
+        execute: async (args: Record<string, unknown>) => {
+          const sid = sessionId;
+          const filesRead = Array.from(sessionFilesRead[sid] || []);
+          const filesEdited = Array.from(sessionFilesEdited[sid] || []);
+          const userPrompt = sessionUserPrompt[sid] || '';
+          const focus = args.focus ? String(args.focus) : 'general progress';
+
+          // Simple summary (AI summarization deferred for now)
+          const summary = `## Session Summary (${focus})
+
+**Request**: ${userPrompt || 'N/A'}
+
+**Files Read**: ${filesRead.length}
+${filesRead.slice(0, 10).map(f => `- ${f}`).join('\n')}
+
+**Files Edited**: ${filesEdited.length}
+${filesEdited.slice(0, 10).map(f => `- ${f}`).join('\n')}
+
+See observations for detailed changes.`;
+
+          const obs = {
+            type: 'discovery',
+            title: `Session Summary (${focus})`,
+            subtitle: `Summary of session activity`,
+            narrative: summary,
+            facts: [`Files read: ${filesRead.length}`, `Files edited: ${filesEdited.length}`],
+            concepts: ['session-summary'],
+            filesRead,
+            filesModified: filesEdited,
+            sessionId: sid,
+            timestamp: new Date().toISOString(),
+          };
+
+          try {
+            const obsResult = writeObservation(directory, obs);
+            updateIndex(directory);
+            return `Session summary saved as observation #${obsResult.id}`;
+          } catch (error) {
+            return `Failed to save summary: ${error}`;
+          }
         },
       },
     },
