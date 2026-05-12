@@ -50,16 +50,15 @@ export async function initializeOpencodeClient(): Promise<any> {
  */
 async function findExistingObserverSession(client: any, workdir?: string): Promise<string | null> {
   try {
-    // List all sessions
     const result = await client.session.list({
       query: { directory: workdir },
     });
 
     const sessions = result?.data || [];
     
-    // Find all observer sessions
+    // Find all observer sessions by title
     const observerSessions = sessions.filter(
-      (s: any) => s.title === 'opencode-mem-observer' || s.title === 'opencode-mem-observer'
+      (s: any) => s.title === 'mem-observer'
     );
 
     if (observerSessions.length === 0) {
@@ -122,7 +121,7 @@ async function getOrCreateObserverSession(workdir?: string): Promise<string | nu
   try {
     const result = await client.session.create({
       body: {
-        title: 'opencode-mem-observer',
+        title: 'mem-observer',
       },
       query: {
         directory: workdir,
