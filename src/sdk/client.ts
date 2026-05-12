@@ -19,6 +19,9 @@ import {
 
 let opencodeClient: any = null;
 let observerSessionId: string | null = null;
+let observerMessageCount: number = 0;
+
+const MAX_OBSERVER_MESSAGES = 10; // Clean up after 10 messages
 
 /**
  * Initialize OpenCode SDK client
@@ -44,10 +47,18 @@ export async function initializeOpencodeClient(): Promise<any> {
 /**
  * Get or create an observer session for background analysis
  * This session is separate from user sessions to avoid queueing
+ * 
+ * Cleanup strategy: delete and recreate when message count exceeds threshold
  */
 async function getOrCreateObserverSession(workdir?: string): Promise<string | null> {
   const client = getOpencodeClient();
   if (!client) return null;
+
+  // Check if we need to clean up (too many messages accumulated)
+  if (observerSessionId && observerMessageCount >= MAX_OBSERVER_MESSAGES) {
+    logger.info('SDK_CLIENT', `Cleaning up observer session (messages: ${observerMessageCount})`);
+    await cleanupObserverSession();
+  }
 
   // Reuse existing observer session
   if (observerSessionId) {
@@ -66,6 +77,7 @@ async function getOrCreateObserverSession(workdir?: string): Promise<string | nu
 
     if (result?.data?.id) {
       observerSessionId = result.data.id;
+      observerMessageCount = 0; // Reset counter
       logger.info('SDK_CLIENT', `Created observer session: ${observerSessionId}`);
       return observerSessionId;
     }
@@ -180,6 +192,9 @@ export async function generateObservationViaSDK(
       },
     });
 
+    // Increment message counter after successful prompt
+    observerMessageCount++;
+
     // Extract structured output from response
     const structuredOutput = syncResult?.data?.info?.structured_output;
     if (!structuredOutput) {
@@ -251,6 +266,9 @@ export async function generateSessionSummaryViaSDK(
         noReply: false,
       },
     });
+
+    // Increment message counter after successful prompt
+    observerMessageCount++;
 
     const structuredOutput = result?.data?.info?.structured_output;
     if (!structuredOutput) {
