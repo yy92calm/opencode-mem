@@ -94,19 +94,44 @@ mem-capture(
 )
 ```
 
+### 分析用户操作习惯
+
+分析历史记忆文件，总结工具使用、文件类型、活跃时间、工作流模式等：
+
+```
+mem-insights(daysBack=90)
+```
+
+### 生成用户画像
+
+基于历史记忆生成用户画像，新会话自动加载以帮助 agent 理解用户意图：
+
+```
+mem-profile(force=false)  # 查看现有画像
+mem-profile(force=true)   # 强制重新生成
+```
+
+画像文件 `~/.config/opencode/mem/profile.md`：
+- 首次安装时创建空模板（只有分区标题）
+- 观察记录 ≥ 20 条后自动填充
+- 后续每 30 天或新增 ≥ 30 条观察时更新
+- 限制 60 行，避免上下文过大
+
 ## 存储结构
 
 ```
 ~/.config/opencode/mem/
 ├── INDEX.md              # 自动生成的索引
-├── observations/         # 观察记录
-│   ├── 0001-oauth-pkce.md
-│   ├── 0002-api-refactor.md
-│   └── 0003-db-index.md
-├── sessions/             # 会话摘要
-│   ├── 2026-05-11-auth-work.md
-│   └── 2026-05-12-api-fix.md
-└── concepts/             # 概念文档
+├── profile.md            # 用户画像（自动更新）
+├── 2026-05/              # 按年月分目录
+│   ├── observations/     # 观察记录
+│   │   ├── 0140-command-executed.md
+│   │   └── 0141-bash-operation.md
+│   └── sessions/         # 会话摘要
+│       └── 2026-05-12-session.md
+└── 2026-06/
+    ├── observations/
+    └── sessions/
 ```
 
 ## 观察记录格式
@@ -187,6 +212,8 @@ npm run install:opencode  # 安装到 OpenCode
 - **Fire-and-forget 分析**：规则生成立即保存，AI 分析异步后台运行，不阻塞用户会话
 - **独立观察会话**：AI 分析使用独立会话，消息超过 100 条自动清理重建，避免上下文累积影响效率
 - **全局记忆目录**：所有项目共享 `~/.config/opencode/mem/` 目录
+- **按时间分目录**：记忆文件按年月分目录（YYYY-MM/），便于管理和清理
+- **用户画像**：`profile.md` 首次安装创建空模板，积累足够数据后自动填充，新会话自动加载
 - **日志系统**：插件日志通过 SDK 发送，不在对话中显示
 - **重启生效**：安装或更新后需要重启 OpenCode
 
