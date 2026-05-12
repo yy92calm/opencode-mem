@@ -45,10 +45,55 @@ export async function initializeOpencodeClient(): Promise<any> {
 }
 
 /**
+ * Find existing observer session and reuse it
+ * Clean up duplicate observer sessions if found
+ */
+async function findExistingObserverSession(client: any, workdir?: string): Promise<string | null> {
+  try {
+    // List all sessions
+    const result = await client.session.list({
+      query: { directory: workdir },
+    });
+
+    const sessions = result?.data || [];
+    
+    // Find all observer sessions
+    const observerSessions = sessions.filter(
+      (s: any) => s.title === 'opencode-mem-observer' || s.title === 'opencode-mem-observer'
+    );
+
+    if (observerSessions.length === 0) {
+      return null;
+    }
+
+    // Reuse the first one, delete the rest
+    const reuseSession = observerSessions[0];
+    logger.info('SDK_CLIENT', `Reusing existing observer session: ${reuseSession.id}`);
+
+    // Delete duplicate sessions
+    for (let i = 1; i < observerSessions.length; i++) {
+      try {
+        await client.session.delete({
+          path: { id: observerSessions[i].id },
+        });
+        logger.info('SDK_CLIENT', `Deleted duplicate observer session: ${observerSessions[i].id}`);
+      } catch (e) {
+        logger.warn('SDK_CLIENT', `Failed to delete duplicate session: ${e}`);
+      }
+    }
+
+    return reuseSession.id;
+  } catch (error) {
+    logger.warn('SDK_CLIENT', `Failed to list sessions: ${error}`);
+    return null;
+  }
+}
+
+/**
  * Get or create an observer session for background analysis
  * This session is separate from user sessions to avoid queueing
  * 
- * Cleanup strategy: delete and recreate when message count exceeds threshold
+ * Cleanup strategy: reuse existing, delete duplicates, recreate after 100 messages
  */
 async function getOrCreateObserverSession(workdir?: string): Promise<string | null> {
   const client = getOpencodeClient();
@@ -60,11 +105,20 @@ async function getOrCreateObserverSession(workdir?: string): Promise<string | nu
     await cleanupObserverSession();
   }
 
-  // Reuse existing observer session
+  // If we already have a session ID in memory, reuse it
   if (observerSessionId) {
     return observerSessionId;
   }
 
+  // Try to find and reuse existing observer session
+  const existingId = await findExistingObserverSession(client, workdir);
+  if (existingId) {
+    observerSessionId = existingId;
+    observerMessageCount = 0;
+    return observerSessionId;
+  }
+
+  // Create new observer session if none exists
   try {
     const result = await client.session.create({
       body: {
@@ -77,8 +131,8 @@ async function getOrCreateObserverSession(workdir?: string): Promise<string | nu
 
     if (result?.data?.id) {
       observerSessionId = result.data.id;
-      observerMessageCount = 0; // Reset counter
-      logger.info('SDK_CLIENT', `Created observer session: ${observerSessionId}`);
+      observerMessageCount = 0;
+      logger.info('SDK_CLIENT', `Created new observer session: ${observerSessionId}`);
       return observerSessionId;
     }
   } catch (error) {
