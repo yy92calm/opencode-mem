@@ -1,4 +1,5 @@
 import { listObservations, listSessions } from '../storage/markdown.js';
+import { loadProfile } from '../analysis/profile.js';
 
 import type { MemSettings } from '../types/index.js';
 
@@ -23,7 +24,9 @@ export function buildContext(
     .filter(ses => new Date(ses.timestamp) >= cutoffDate)
     .slice(0, sessionCount);
 
-  if (observations.length === 0 && sessions.length === 0) return null;
+  const profile = loadProfile(directory);
+
+  if (!profile && observations.length === 0 && sessions.length === 0) return null;
 
   let context = `# Memory Context
 
@@ -31,6 +34,10 @@ export function buildContext(
 > Showing last ${daysBack} days
 
 `;
+
+  if (profile) {
+    context += `## User Profile\n\n${profile}\n\n`;
+  }
 
   if (observations.length > 0) {
     context += `## Recent Observations\n\n`;

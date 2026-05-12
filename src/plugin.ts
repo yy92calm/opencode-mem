@@ -2,6 +2,8 @@ import { writeObservation, writeSessionSummary, updateIndex, getMemDir, ensureMe
 import { classifyTool, isTrivial, generateObservation, extractFiles } from './utils/observer.js';
 import { buildContext } from './context/inject.js';
 import { searchMemories } from './search/search.js';
+import { analyzeUserHabits, formatInsights } from './analysis/insights.js';
+import { generateProfile, saveProfile, loadProfile, shouldUpdateProfile, initProfile } from './analysis/profile.js';
 import { setOpencodeClient, isSDKAvailable, generateObservationViaSDK, generateSessionSummaryViaSDK } from './sdk/client.js';
 import { setLoggerClient } from './utils/logger.js';
 import type { ObservationSchema, SessionSummarySchema } from './sdk/observer.js';
@@ -27,6 +29,7 @@ export const MemPlugin: Plugin = async ({ project, client, directory }: PluginIn
 
   const memDir = getMemDir(directory);
   ensureMemDirs(directory);
+  initProfile(directory);
 
   const sessionId = directory; // 使用 directory 作为 session ID
   if (!sessionFilesRead[sessionId]) sessionFilesRead[sessionId] = new Set();
@@ -113,13 +116,47 @@ export const MemPlugin: Plugin = async ({ project, client, directory }: PluginIn
         sessionFilesRead[sid] = new Set();
         sessionFilesEdited[sid] = new Set();
 
-        await client.app.log({
-          body: {
-            service: 'opencode-mem',
-            level: 'info',
-            message: `Session created, loading memory context from ${memDir}`,
-          },
-        });
+        const profile = loadProfile(directory);
+        if (profile) {
+          await client.app.log({
+            body: {
+              service: 'opencode-mem',
+              level: 'info',
+              message: `Session created, loaded user profile (${profile.split('\n').length} lines)`,
+            },
+          });
+        } else {
+          await client.app.log({
+            body: {
+              service: 'opencode-mem',
+              level: 'info',
+              message: `Session created, loading memory context from ${memDir}`,
+            },
+          });
+        }
+
+        if (shouldUpdateProfile(directory)) {
+          generateProfile(directory).then(profileContent => {
+            if (profileContent) {
+              saveProfile(directory, profileContent);
+              client.app.log({
+                body: {
+                  service: 'opencode-mem',
+                  level: 'info',
+                  message: 'User profile updated automatically',
+                },
+              });
+            }
+          }).catch(err => {
+            client.app.log({
+              body: {
+                service: 'opencode-mem',
+                level: 'warn',
+                message: `Profile update failed: ${err}`,
+              },
+            });
+          });
+        }
       }
 
       if (event.type === 'session.idle') {
@@ -308,6 +345,38 @@ See observations for detailed changes.`;
           const obsResult = writeObservation(context.directory, obs);
           updateIndex(context.directory);
           return `Session summary saved as observation #${obsResult.id}`;
+        },
+      }),
+      'mem-insights': tool({
+        description: 'Analyze user operation habits from memory files',
+        args: {
+          daysBack: z.number().optional().default(90).describe('Analyze last N days'),
+        },
+        execute: async (args, context) => {
+          const insights = analyzeUserHabits(context.directory, {
+            daysBack: args.daysBack ?? 90,
+          });
+          return formatInsights(insights);
+        },
+      }),
+      'mem-profile': tool({
+        description: 'Generate or update user profile from memory analysis',
+        args: {
+          force: z.boolean().optional().default(false).describe('Force regeneration'),
+        },
+        execute: async (args, context) => {
+          const existing = loadProfile(context.directory);
+          if (existing && !args.force) {
+            return `Existing profile found (${existing.split('\n').length} lines):\n\n${existing}`;
+          }
+
+          const profile = await generateProfile(context.directory);
+          if (!profile) {
+            return 'Failed to generate profile. Not enough memory data.';
+          }
+
+          saveProfile(context.directory, profile);
+          return `Profile generated and saved (${profile.split('\n').length} lines):\n\n${profile}`;
         },
       }),
     },
