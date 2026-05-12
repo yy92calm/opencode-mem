@@ -4,19 +4,31 @@ import type { MemSettings } from '../types/index.js';
 
 export function buildContext(
   directory: string,
-  options: { maxObservations?: number; sessionCount?: number; memDir?: string } = {}
+  options: { maxObservations?: number; sessionCount?: number; memDir?: string; daysBack?: number } = {}
 ): string | null {
-  const { maxObservations = 15, sessionCount = 3, memDir: customMemDir } = options;
+  const { maxObservations = 15, sessionCount = 3, memDir: customMemDir, daysBack = 7 } = options;
   const settings = customMemDir ? { memDir: customMemDir } : undefined;
 
-  const observations = listObservations(directory, settings).slice(-maxObservations).reverse();
-  const sessions = listSessions(directory, settings).slice(0, sessionCount);
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - daysBack);
+
+  const allObservations = listObservations(directory, settings);
+  const allSessions = listSessions(directory, settings);
+
+  const observations = allObservations
+    .filter(obs => new Date(obs.timestamp) >= cutoffDate)
+    .slice(-maxObservations)
+    .reverse();
+  const sessions = allSessions
+    .filter(ses => new Date(ses.timestamp) >= cutoffDate)
+    .slice(0, sessionCount);
 
   if (observations.length === 0 && sessions.length === 0) return null;
 
   let context = `# Memory Context
 
-> Retrieved from \`.opencode/mem/\` at ${new Date().toISOString()}
+> Retrieved from memory store at ${new Date().toISOString()}
+> Showing last ${daysBack} days
 
 `;
 

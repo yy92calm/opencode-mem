@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { parseFrontmatter, getMemDir } from '../storage/markdown.js';
 import type { SearchResult, MemSettings } from '../types/index.js';
@@ -6,11 +6,16 @@ import type { SearchResult, MemSettings } from '../types/index.js';
 export function searchMemories(
   directory: string,
   query: string,
-  options: { type?: string; limit?: number; memDir?: string } = {}
+  options: { type?: string; limit?: number; memDir?: string; daysBack?: number } = {}
 ): SearchResult[] {
-  const { type, limit = 20, memDir: customMemDir } = options;
+  const { type, limit = 20, memDir: customMemDir, daysBack = 30 } = options;
   const memDir = customMemDir || getMemDir(directory);
   const results: SearchResult[] = [];
+
+  const cutoffDate = daysBack > 0 ? new Date() : null;
+  if (cutoffDate) {
+    cutoffDate.setDate(cutoffDate.getDate() - daysBack);
+  }
 
   const searchDirs: { dir: string; resultType: string }[] = [];
   if (!type || type === 'observation' || type === 'bugfix' || type === 'feature' || type === 'refactor' || type === 'decision' || type === 'discovery' || type === 'config' || type === 'error') {
@@ -24,27 +29,36 @@ export function searchMemories(
     const fullPath = join(memDir, dir);
     if (!existsSync(fullPath)) continue;
 
-    const files = readdirSync(fullPath).filter(f => f.endsWith('.md'));
-    for (const file of files) {
-      const filepath = join(fullPath, file);
+    const files = walkMdFiles(fullPath);
+    for (const filepath of files) {
       const content = readFileSync(filepath, 'utf-8');
 
-        if (matchesQuery(content, query)) {
-          const fm = parseFrontmatter(content);
-          const obsType = String(fm.type || '');
+      if (matchesQuery(content, query)) {
+        const fm = parseFrontmatter(content);
+        const obsType = String(fm.type || '');
+        const timestamp = String(fm.timestamp || '');
 
-          if (type && resultType === 'observation' && type !== 'observation' && obsType !== type) {
+        // Filter by type
+        if (type && resultType === 'observation' && type !== 'observation' && obsType !== type) {
+          continue;
+        }
+
+        // Filter by date
+        if (cutoffDate && timestamp) {
+          const fileDate = new Date(timestamp);
+          if (fileDate < cutoffDate) {
             continue;
           }
+        }
 
-          results.push({
+        results.push({
           id: Number(fm.id) || 0,
           type: resultType,
-          title: String(fm.title || fm.request || file.replace('.md', '')),
+          title: String(fm.title || fm.request || filepath.split('/').pop()?.replace('.md', '') || ''),
           subtitle: String(fm.subtitle || fm.learned || ''),
           file: filepath,
           snippet: extractSnippet(content, query),
-          timestamp: String(fm.timestamp || ''),
+          timestamp: timestamp,
           concepts: Array.isArray(fm.concepts) ? fm.concepts as string[] : [],
           facts: Array.isArray(fm.facts) ? fm.facts as string[] : [],
         });
@@ -53,6 +67,30 @@ export function searchMemories(
   }
 
   return results.slice(0, limit);
+}
+
+function walkMdFiles(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const files: string[] = [];
+  try {
+    const entries = readdirSync(dir);
+    for (const entry of entries) {
+      const fullPath = join(dir, entry);
+      try {
+        const stat = statSync(fullPath);
+        if (stat.isDirectory()) {
+          files.push(...walkMdFiles(fullPath));
+        } else if (entry.endsWith('.md')) {
+          files.push(fullPath);
+        }
+      } catch {
+        // Skip inaccessible files
+      }
+    }
+  } catch {
+    // Skip inaccessible directories
+  }
+  return files;
 }
 
 function matchesQuery(content: string, query: string): boolean {

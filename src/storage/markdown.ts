@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'fs';
 import { join, isAbsolute } from 'path';
 import { homedir } from 'os';
 import type { Observation, SessionSummary, MemSettings } from '../types/index.js';
@@ -17,10 +17,19 @@ export function getMemDir(directory: string, settings?: Partial<MemSettings>): s
   return resolved.memDir;
 }
 
+function getMonthDir(timestamp: string, memDir: string): string {
+  const date = new Date(timestamp);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return join(memDir, `${year}-${month}`);
+}
+
 export function ensureMemDirs(directory: string, settings?: Partial<MemSettings>): void {
   const memDir = getMemDir(directory, settings);
-  for (const sub of ['observations', 'sessions', 'concepts']) {
-    const dir = join(memDir, sub);
+  const now = new Date().toISOString();
+  const monthDir = getMonthDir(now, memDir);
+  for (const sub of ['observations', 'sessions']) {
+    const dir = join(monthDir, sub);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   }
 }
@@ -103,8 +112,10 @@ export function writeObservation(
   settings?: Partial<MemSettings>
 ): { id: number; filepath: string } {
   const memDir = getMemDir(directory, settings);
-  const obsDir = join(memDir, 'observations');
-  ensureMemDirs(directory, settings);
+  const monthDir = getMonthDir(obs.timestamp, memDir);
+  const obsDir = join(monthDir, 'observations');
+  
+  if (!existsSync(obsDir)) mkdirSync(obsDir, { recursive: true });
 
   const id = getNextId(obsDir);
   const paddedId = padId(id);
@@ -150,8 +161,10 @@ export function writeSessionSummary(
   settings?: Partial<MemSettings>
 ): { filepath: string } {
   const memDir = getMemDir(directory, settings);
-  const sesDir = join(memDir, 'sessions');
-  ensureMemDirs(directory, settings);
+  const monthDir = getMonthDir(summary.timestamp, memDir);
+  const sesDir = join(monthDir, 'sessions');
+  
+  if (!existsSync(sesDir)) mkdirSync(sesDir, { recursive: true });
 
   const dateStr = summary.timestamp.split('T')[0];
   const slug = slugify(summary.request || 'session');
@@ -215,25 +228,57 @@ export function readObservation(filepath: string): Observation | null {
   };
 }
 
+function getAllMonthDirs(memDir: string): string[] {
+  if (!existsSync(memDir)) return [];
+  const entries = readdirSync(memDir).filter((entry: string) => {
+    const fullPath = join(memDir, entry);
+    return statSync(fullPath).isDirectory() && /^\d{4}-\d{2}$/.test(entry);
+  }).sort();
+  return entries.map(entry => join(memDir, entry));
+}
+
+function walkFiles(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const files: string[] = [];
+  const entries = readdirSync(dir);
+  for (const entry of entries) {
+    const fullPath = join(dir, entry);
+    if (statSync(fullPath).isDirectory()) {
+      files.push(...walkFiles(fullPath));
+    } else if (entry.endsWith('.md')) {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
+
 export function listObservations(directory: string, settings?: Partial<MemSettings>): Observation[] {
   const memDir = getMemDir(directory, settings);
-  const obsDir = join(memDir, 'observations');
-  if (!existsSync(obsDir)) return [];
+  const allFiles: string[] = [];
+  
+  const monthDirs = getAllMonthDirs(memDir);
+  for (const monthDir of monthDirs) {
+    const obsDir = join(monthDir, 'observations');
+    allFiles.push(...walkFiles(obsDir));
+  }
 
-  const files = readdirSync(obsDir).filter((f: string) => f.endsWith('.md')).sort();
-  return files
-    .map(f => readObservation(join(obsDir, f)))
+  return allFiles
+    .map(f => readObservation(f))
     .filter((obs): obs is Observation => obs !== null);
 }
 
 export function listSessions(directory: string, settings?: Partial<MemSettings>): SessionSummary[] {
   const memDir = getMemDir(directory, settings);
-  const sesDir = join(memDir, 'sessions');
-  if (!existsSync(sesDir)) return [];
+  const allFiles: string[] = [];
+  
+  const monthDirs = getAllMonthDirs(memDir);
+  for (const monthDir of monthDirs) {
+    const sesDir = join(monthDir, 'sessions');
+    allFiles.push(...walkFiles(sesDir));
+  }
 
-  const files = readdirSync(sesDir).filter((f: string) => f.endsWith('.md')).sort().reverse();
-  return files.map(f => {
-    const content = readFileSync(join(sesDir, f), 'utf-8');
+  return allFiles.map(f => {
+    const content = readFileSync(f, 'utf-8');
     const fm = parseFrontmatter(content);
     return {
       sessionId: String(fm.session_id || ''),
@@ -279,8 +324,10 @@ export function updateIndex(directory: string, settings?: Partial<MemSettings>):
   for (const [type, items] of Object.entries(byType).sort()) {
     index += `### ${type}\n\n`;
     for (const obs of items) {
+      const monthDir = getMonthDir(obs.timestamp, memDir);
+      const relativePath = monthDir.replace(memDir + '/', '');
       const file = `${padId(obs.id)}-${slugify(obs.title)}.md`;
-      index += `- [${obs.title}](observations/${file}) — ${obs.subtitle}\n`;
+      index += `- [${obs.title}](${relativePath}/observations/${file}) — ${obs.subtitle}\n`;
     }
     index += '\n';
   }

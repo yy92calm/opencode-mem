@@ -211,12 +211,14 @@ tool: {
         args: {
           query: z.string().describe('Search query'),
           type: z.string().optional().describe('Filter by observation type'),
-          limit: z.number().optional().default(10).describe('Max results'),
+          limit: z.number().optional().default(20).describe('Max results'),
+          daysBack: z.number().optional().default(30).describe('Search within last N days (0 = all)'),
         },
         execute: async (args, context) => {
           const results = searchMemories(context.directory, args.query, {
             type: args.type,
-            limit: args.limit ?? 10,
+            limit: args.limit ?? 20,
+            daysBack: args.daysBack ?? 30,
           });
           return JSON.stringify(results, null, 2);
         },
@@ -256,11 +258,13 @@ tool: {
         args: {
           maxObservations: z.number().optional().default(15).describe('Max observations to include'),
           maxSessions: z.number().optional().default(3).describe('Max sessions to include'),
+          daysBack: z.number().optional().default(7).describe('Load from last N days'),
         },
         execute: async (args, context) => {
           return buildContext(context.directory, {
             maxObservations: args.maxObservations ?? 15,
             sessionCount: args.maxSessions ?? 3,
+            daysBack: args.daysBack ?? 7,
           }) || 'No memory context available.';
         },
       }),
