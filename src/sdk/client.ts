@@ -21,7 +21,7 @@ let opencodeClient: any = null;
 let observerSessionId: string | null = null;
 let observerMessageCount: number = 0;
 
-const MAX_OBSERVER_MESSAGES = 10; // Clean up after 10 messages
+const MAX_OBSERVER_MESSAGES = 100; // Clean up after 100 messages to balance efficiency
 
 /**
  * Initialize OpenCode SDK client
