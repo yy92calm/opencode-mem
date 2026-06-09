@@ -1,0 +1,33 @@
+# opencode-mem-worker config
+# Copy to config.yaml and customize. Secrets should come from env vars.
+
+port: 3777
+db_path: ./data/memory.db
+
+llm:
+  # Works with any OpenAI-compatible endpoint:
+  #   OpenAI      → https://api.openai.com/v1
+  #   Ollama      → http://localhost:11434/v1
+  #   OpenRouter  → https://openrouter.ai/api/v1
+  #   Together    → https://api.together.xyz/v1
+  #   DeepSeek    → https://api.deepseek.com/v1
+  provider: openai-compatible
+  base_url: https://api.openai.com/v1
+  api_key: ${LLM_API_KEY}           # required env var
+  model: gpt-4o-mini                # cheap model is fine for summary/profile
+  timeout_ms: 60000
+  max_retries: 3
+
+# Pre-provision user → api_key bindings.
+# Plugin sends Authorization: Bearer <api_key>, worker resolves to user_id.
+# Generate keys with: openssl rand -hex 32
+users:
+  - user_id: vincent
+    api_key: ${USER_VINCENT_KEY}
+  # - user_id: vincent-work
+  #   api_key: ${USER_VINCENT_WORK_KEY}
+
+cron:
+  daily_summary: "0 3 * * *"            # every day at 03:00
+  weekly_profile: "0 3 * * 0"           # every Sunday at 03:00
+  hard_memory_threshold: 10             # refresh profile after N new "remember" entries

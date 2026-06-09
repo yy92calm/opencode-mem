@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.opencode/mem/
+*.log
+.DS_Store
+server/config.yaml
+server/data/

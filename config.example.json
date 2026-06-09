@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/yy92calm/opencode-mem2md/main/config.schema.json",
+
+  "//": "Required: where the Worker is reachable",
+  "server_url": "http://localhost:3777",
+
+  "//api_key": "Required: issued by your Worker admin (or yourself if self-hosting)",
+  "api_key": "REPLACE_ME_with_user_key",
+
+  "//optional_batching": "Defaults are fine for most users",
+  "raw_buffer_size": 20,
+  "raw_flush_interval_ms": 10000,
+
+  "//optional_resilience": "Bad-network tunables",
+  "watchdog_interval_ms": 300000,
+  "write_timeout_ms": 15000,
+  "read_timeout_ms": 10000,
+  "profile_fetch_timeout_ms": 2000,
+  "offline_cache_max_bytes": 10485760,
+
+  "//optional_paths": "Where local cache files live",
+  "offline_cache_path": "~/.config/opencode/mem/offline.jsonl",
+  "profile_cache_path": "~/.config/opencode/mem/profile.cache.md"
+}

@@ -1,0 +1,20 @@
+services:
+  worker:
+    build: .
+    container_name: opencode-mem-worker
+    ports:
+      - "3777:3777"
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      # All values referenced as ${VAR} in config.yaml must be set here or in .env
+      - LLM_API_KEY=${LLM_API_KEY}
+      - USER_VINCENT_KEY=${USER_VINCENT_KEY}
+      - CORS_ORIGIN=${CORS_ORIGIN:-*}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3777/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
