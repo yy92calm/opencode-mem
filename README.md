@@ -1,5 +1,7 @@
 # opencode-mem
 
+**[中文文档](./README_CN.md)**
+
 > Persistent memory for [OpenCode](https://opencode.ai) via a centralized Worker. Conversations are captured; cron jobs distill them into a per-user profile that's injected back into future sessions.
 
 This monorepo has two parts:
