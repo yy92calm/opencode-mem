@@ -26,11 +26,15 @@ args: {}
 The Worker runs LLM jobs on a schedule:
 
 - **Daily 03:00** — distills yesterday's raw conversations into a daily summary
-- **Weekly Sunday 03:00** — merges 7 days of summaries + all hard memories into a single profile
-- **On demand** — refreshes profile when ≥10 new hard memories accumulate
+- **Weekly Sunday 03:00** — builds a profile from the last 7 days of daily summaries
+- **On demand** — refreshes profile when ≥10 new hard memories accumulate (delta trigger)
+
+Hard memories are NOT fed into the profile — they're injected into the system
+prompt separately by the plugin. The profile captures only what's *observed*
+from behavior; hard memories capture what the user *asserted*.
 
 Profiles are capped at 60 lines and structured by section
-(Identity, Stack & Tools, Preferences, Active Projects, Hard Rules, Recent Patterns).
+(Identity & Context, Stack & Tools, Preferences, Active Projects, Recent Patterns).
 
 ## Notes
 

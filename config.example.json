@@ -1,6 +1,4 @@
 {
-  "$schema": "https://raw.githubusercontent.com/yy92calm/opencode-mem2md/main/config.schema.json",
-
   "//": "Required: where the Worker is reachable",
   "server_url": "http://localhost:3777",
 
@@ -17,6 +15,10 @@
   "read_timeout_ms": 10000,
   "profile_fetch_timeout_ms": 2000,
   "offline_cache_max_bytes": 10485760,
+
+  "//optional_caching": "In-memory TTLs to avoid per-turn network round-trips (0 disables)",
+  "profile_cache_ttl_ms": 60000,
+  "memories_cache_ttl_ms": 30000,
 
   "//optional_paths": "Where local cache files live",
   "offline_cache_path": "~/.config/opencode/mem/offline.jsonl",

@@ -1,5 +1,6 @@
 import { readFileSync, existsSync } from 'fs';
 import { parse as parseYaml } from 'yaml';
+import cron from 'node-cron';
 import type { ServerConfig } from '../types/index.js';
 
 const DEFAULT_CONFIG_PATH = process.env.CONFIG_PATH || './config.yaml';
@@ -40,9 +41,40 @@ export function loadConfig(path: string = DEFAULT_CONFIG_PATH): ServerConfig {
   if (!Array.isArray(expanded.users) || expanded.users.length === 0) {
     throw new Error('Config: at least one user binding is required');
   }
+  for (const u of expanded.users) {
+    if (!u?.user_id || typeof u.user_id !== 'string') {
+      throw new Error('Config: each user binding requires a non-empty user_id');
+    }
+    if (!u?.api_key || typeof u.api_key !== 'string') {
+      throw new Error(`Config: user "${u?.user_id ?? '?'}" requires a non-empty api_key`);
+    }
+  }
+  // Duplicate user_id / api_key detection
+  const seenIds = new Set<string>();
+  const seenKeys = new Set<string>();
+  for (const u of expanded.users) {
+    if (seenIds.has(u.user_id)) throw new Error(`Config: duplicate user_id "${u.user_id}"`);
+    if (seenKeys.has(u.api_key)) throw new Error(`Config: duplicate api_key for user "${u.user_id}"`);
+    seenIds.add(u.user_id);
+    seenKeys.add(u.api_key);
+  }
+
+  const port = expanded.port ?? 3777;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Config: port must be an integer in [1,65535], got ${port}`);
+  }
+
+  const dailyExpr = expanded.cron?.daily_summary ?? '0 3 * * *';
+  const weeklyExpr = expanded.cron?.weekly_profile ?? '0 3 * * 0';
+  if (!cron.validate(dailyExpr)) {
+    throw new Error(`Config: invalid cron expression for daily_summary: "${dailyExpr}"`);
+  }
+  if (!cron.validate(weeklyExpr)) {
+    throw new Error(`Config: invalid cron expression for weekly_profile: "${weeklyExpr}"`);
+  }
 
   return {
-    port: expanded.port ?? 3777,
+    port,
     db_path: expanded.db_path ?? './data/memory.db',
     llm: {
       provider: expanded.llm.provider ?? 'openai-compatible',
@@ -54,8 +86,8 @@ export function loadConfig(path: string = DEFAULT_CONFIG_PATH): ServerConfig {
     },
     users: expanded.users,
     cron: {
-      daily_summary: expanded.cron?.daily_summary ?? '0 3 * * *',
-      weekly_profile: expanded.cron?.weekly_profile ?? '0 3 * * 0',
+      daily_summary: dailyExpr,
+      weekly_profile: weeklyExpr,
       hard_memory_threshold: expanded.cron?.hard_memory_threshold ?? 10,
     },
   };

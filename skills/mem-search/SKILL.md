@@ -20,7 +20,7 @@ Wraps the `mem-search` plugin tool. Calls `GET /api/memory/search` on the Worker
 tool: mem-search
 args:
   query: free-form text (matched via SQLite FTS5)
-  limit: number of results (default 20)
+  limit: number of results (default 50)
 ```
 
 ## Notes

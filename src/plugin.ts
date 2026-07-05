@@ -69,7 +69,14 @@ export const MemPlugin: Plugin = async ({ client, directory }: PluginInput) => {
 
   const cfg = fillDefaults(rawCfg);
   const worker = new WorkerClient(cfg, (level, msg, extra) => {
-    (logger as any)[level === 'fatal' ? 'error' : level]?.(SERVICE, msg, extra);
+    switch (level) {
+      case 'debug': logger.debug(SERVICE, msg, extra); break;
+      case 'info': logger.info(SERVICE, msg, extra); break;
+      case 'warn': logger.warn(SERVICE, msg, extra); break;
+      case 'error': logger.error(SERVICE, msg, extra); break;
+      case 'fatal': logger.fatal(SERVICE, msg, extra); break;
+      default: logger.info(SERVICE, msg, extra);
+    }
   });
 
   const healthy = await worker.checkHealth(true);

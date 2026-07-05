@@ -160,6 +160,7 @@ export async function runRawPrune(): Promise<void> {
 }
 
 let started = false;
+const scheduledTasks: cron.ScheduledTask[] = [];
 
 export function startCron(): void {
   if (started) return;
@@ -168,16 +169,31 @@ export function startCron(): void {
   const cfg = getConfig();
   log('info', `scheduling`, { daily: cfg.cron.daily_summary, weekly: cfg.cron.weekly_profile });
 
-  cron.schedule(cfg.cron.daily_summary, () => {
-    runDailySummary().catch(e => log('error', 'daily uncaught', { error: String(e) }));
-  });
+  scheduledTasks.push(
+    cron.schedule(cfg.cron.daily_summary, () => {
+      runDailySummary().catch(e => log('error', 'daily uncaught', { error: String(e) }));
+    }),
+  );
 
-  cron.schedule(cfg.cron.weekly_profile, () => {
-    runWeeklyProfile().catch(e => log('error', 'weekly uncaught', { error: String(e) }));
-  });
+  scheduledTasks.push(
+    cron.schedule(cfg.cron.weekly_profile, () => {
+      runWeeklyProfile().catch(e => log('error', 'weekly uncaught', { error: String(e) }));
+    }),
+  );
 
   // prune monthly
-  cron.schedule('0 4 1 * *', () => {
-    runRawPrune().catch(e => log('error', 'prune uncaught', { error: String(e) }));
-  });
+  scheduledTasks.push(
+    cron.schedule('0 4 1 * *', () => {
+      runRawPrune().catch(e => log('error', 'prune uncaught', { error: String(e) }));
+    }),
+  );
+}
+
+export function stopCron(): void {
+  for (const t of scheduledTasks) {
+    try { t.stop(); } catch { /* ignore */ }
+  }
+  scheduledTasks.length = 0;
+  started = false;
+  log('info', `cron stopped`);
 }

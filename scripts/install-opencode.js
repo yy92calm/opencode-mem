@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, cpSync } from 'fs';
+import { mkdirSync, existsSync, cpSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
@@ -12,16 +12,17 @@ const HOME = process.env.HOME || process.env.USERPROFILE;
 const OPENCODE_CONFIG_DIR = join(HOME, '.config', 'opencode');
 const OPENCODE_PLUGINS_DIR = join(OPENCODE_CONFIG_DIR, 'plugins');
 const OPENCODE_SKILLS_DIR = join(OPENCODE_CONFIG_DIR, 'skills');
-const OPENCODE_PACKAGE_JSON = join(OPENCODE_CONFIG_DIR, 'package.json');
+
+const SKILL_NAMES = ['mem-search', 'mem-capture', 'mem-profile', 'mem-remember'];
 
 function install() {
-  console.log('🔧 Installing opencode-mem...\n');
+  console.log('Installing opencode-mem...\n');
 
   console.log('1. Building project...');
   try {
     execSync('npm run build:all', { cwd: PROJECT_ROOT, stdio: 'inherit' });
-  } catch (error) {
-    console.error('✗ Build failed. Please run "npm install && npm run build:all" manually.');
+  } catch {
+    console.error('Build failed. Run "npm install && npm run build:all" manually.');
     process.exit(1);
   }
 
@@ -31,58 +32,33 @@ function install() {
   const destPath = join(OPENCODE_PLUGINS_DIR, 'opencode-mem.js');
 
   if (!existsSync(bundlePath)) {
-    console.error(`✗ Bundle not found at ${bundlePath}`);
+    console.error(`Bundle not found at ${bundlePath}`);
     process.exit(1);
   }
 
   cpSync(bundlePath, destPath);
-  console.log(`  ✓ Plugin installed to ${destPath}`);
+  console.log(`  Plugin installed to ${destPath}`);
 
   console.log('\n3. Installing skills...');
   mkdirSync(OPENCODE_SKILLS_DIR, { recursive: true });
   const skillsDir = join(PROJECT_ROOT, 'skills');
 
-  if (existsSync(skillsDir)) {
-    const skillDirs = ['mem-search', 'mem-capture', 'mem-insights', 'mem-profile', 'mem-remember'];
-    for (const skill of skillDirs) {
-      const src = join(skillsDir, skill);
-      const dest = join(OPENCODE_SKILLS_DIR, skill);
-      if (existsSync(src)) {
-        cpSync(src, dest, { recursive: true });
-        console.log(`  ✓ Skill installed: ${skill}`);
-      }
+  for (const skill of SKILL_NAMES) {
+    const src = join(skillsDir, skill);
+    const dest = join(OPENCODE_SKILLS_DIR, skill);
+    if (existsSync(src)) {
+      cpSync(src, dest, { recursive: true });
+      console.log(`  Skill installed: ${skill}`);
     }
   }
 
-  console.log('\n4. Installing dependencies...');
-  const packageJson = {
-    dependencies: {
-      '@opencode-ai/plugin': '^1.14.48',
-      '@opencode-ai/sdk': '^1.14.48',
-      'nodejieba': '^3.5.8',
-      'gray-matter': '^4.0.3',
-      'uuid': '^14.0.0',
-      'pako': '^2.1.0'
-    }
-  };
-  
-  writeFileSync(OPENCODE_PACKAGE_JSON, JSON.stringify(packageJson, null, 2));
-  console.log(`  ✓ Created package.json at ${OPENCODE_PACKAGE_JSON}`);
-  
-  try {
-    console.log('  → Running npm install (this may take a minute for nodejieba compilation)...');
-    execSync('npm install', { cwd: OPENCODE_CONFIG_DIR, stdio: 'inherit' });
-    console.log('  ✓ Dependencies installed successfully');
-  } catch (error) {
-    console.error('  ⚠ npm install failed. You may need to run it manually:');
-    console.error('    cd ~/.config/opencode && npm install');
-  }
-
-  console.log('\n✅ Installation complete!');
+  console.log('\nInstallation complete!');
   console.log('\nNext steps:');
-  console.log('  1. Restart OpenCode');
-  console.log('  2. Memory files will be created in .opencode/mem/');
-  console.log('  3. Use mem_search(), mem_capture(), mem_context() tools');
+  console.log('  1. Configure the plugin: set MEM_SERVER_URL + MEM_API_KEY env vars,');
+  console.log('     or create ~/.config/opencode/mem/config.json (see config.example.json)');
+  console.log('  2. Start the Worker (see server/README.md)');
+  console.log('  3. Restart OpenCode');
+  console.log('  4. Tools available: mem-capture, mem-search, mem-list, mem-profile, mem-health');
 }
 
 install();

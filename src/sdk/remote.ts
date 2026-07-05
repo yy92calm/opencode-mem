@@ -23,7 +23,16 @@ import type { RawConversation, HardMemory, MemPluginConfig } from '../types/inde
  * No local Markdown / SQLite — Worker is the only source of truth.
  */
 
-type LogFn = (level: string, msg: string, extra?: object) => void;
+type LogFn = (level: string, msg: string, extra?: Record<string, unknown>) => void;
+
+/**
+ * A "poison" entry is one the server rejects as permanently invalid (HTTP 4xx).
+ * Such entries would never succeed on retry, so we drop them to avoid blocking
+ * the rest of the offline cache. 5xx and network errors are retried.
+ */
+function isPoison(e: unknown): boolean {
+  return /\b4\d{2}\b/.test(String(e));
+}
 
 export class WorkerClient {
   private rawBuffer: RawConversation[] = [];
@@ -247,19 +256,33 @@ export class WorkerClient {
 
     const failed: string[] = [];
     let replayed = 0;
+    let dropped = 0;
 
-    // Raw entries go up as one batch. If the batch fails, keep all raw lines.
+    // Raw entries: try as one batch first. On failure, fall back to one-by-one
+    // so a single poison entry (server 4xx) doesn't block the rest forever.
     const rawEntries = entries.filter(e => e.kind === 'raw');
     if (rawEntries.length > 0) {
       try {
         await this.post('/api/raw', { items: rawEntries.map(e => e.payload) });
         replayed += rawEntries.length;
       } catch (e) {
-        this.log('warn', 'offline raw batch failed, keeping for retry', {
+        this.log('warn', 'offline raw batch failed, retrying one-by-one', {
           count: rawEntries.length, error: String(e),
         });
-        for (const e of rawEntries) failed.push(e.line);
-        this.healthy = false;
+        for (const entry of rawEntries) {
+          try {
+            await this.post('/api/raw', { items: [entry.payload] });
+            replayed += 1;
+          } catch (e2) {
+            if (isPoison(e2)) {
+              dropped += 1;
+              this.log('warn', 'offline raw item dropped (server rejected)', { error: String(e2) });
+            } else {
+              failed.push(entry.line);
+              this.healthy = false;
+            }
+          }
+        }
       }
     }
 
@@ -269,21 +292,25 @@ export class WorkerClient {
         await this.post('/api/memory', entry.payload);
         replayed += 1;
       } catch (e) {
-        this.log('warn', 'offline memory replay failed, keeping for retry', {
-          title: entry.payload?.title, error: String(e),
-        });
-        failed.push(entry.line);
-        this.healthy = false;
+        if (isPoison(e)) {
+          dropped += 1;
+          this.log('warn', 'offline memory dropped (server rejected)', {
+            title: entry.payload?.title, error: String(e),
+          });
+        } else {
+          failed.push(entry.line);
+          this.healthy = false;
+        }
       }
     }
 
     // Rewrite cache with only the entries that didn't make it.
     if (failed.length > 0) {
       writeFileSync(path, failed.join('\n') + '\n');
-      this.log('warn', 'offline replay partial failure', { replayed, remaining: failed.length });
+      this.log('warn', 'offline replay partial failure', { replayed, remaining: failed.length, dropped });
     } else {
       writeFileSync(path, '');
-      this.log('info', 'offline replay ok', { replayed });
+      this.log('info', 'offline replay ok', { replayed, dropped });
     }
     return replayed;
   }

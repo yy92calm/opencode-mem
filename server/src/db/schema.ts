@@ -24,6 +24,18 @@ export function getDb(): Database.Database {
   return db;
 }
 
+/** Close the database connection. Checkpoints WAL and releases the file lock. */
+export function closeDb(): void {
+  if (!db) return;
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)');
+    db.close();
+  } catch {
+    /* ignore */
+  }
+  db = null;
+}
+
 const SCHEMA = `
 -- Raw conversation data (high volume, low density)
 CREATE TABLE IF NOT EXISTS raw_conversations (
