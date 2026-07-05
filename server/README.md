@@ -10,7 +10,7 @@ Centralized memory backend for [opencode-mem-plugin](../). Stateless HTTP servic
 2. Stores everything in SQLite with FTS5 for hard-memory search
 3. Runs scheduled LLM jobs to produce:
    - **Daily summaries** of raw conversations (every night)
-   - **User profiles** synthesizing summaries + hard memories (weekly + on-demand)
+   - **User profiles** synthesizing daily summaries (weekly + on-demand); hard memories are injected into the system prompt separately by the plugin
 4. Serves the latest profile back to the plugin for context injection
 
 ## Architecture
@@ -66,7 +66,7 @@ All `/api/*` endpoints require `Authorization: Bearer <api_key>`. The api_key re
 | GET    | `/api/memory/search?q=...`  | FTS5 search hard memories            |
 | DELETE | `/api/memory/:id`           | Delete one hard memory               |
 | GET    | `/api/profile`              | Get current user profile (Markdown)  |
-| POST   | `/api/profile/regenerate`   | Manual trigger (`scope: daily│weekly`) |
+| POST   | `/api/profile/regenerate`   | Manual trigger for current user (`scope: daily│weekly`) |
 
 ### Raw upload payload
 
@@ -110,7 +110,7 @@ Defaults (override in config.yaml `cron:` block):
 | Job             | Schedule           | Behavior |
 |-----------------|--------------------|----------|
 | Daily summary   | `0 3 * * *`        | For each user with raw data yesterday → LLM produces structured daily summary. Idempotent. |
-| Weekly profile  | `0 3 * * 0`        | For each user → LLM regenerates profile from last 7 days summaries + all hard memories. |
+| Weekly profile  | `0 3 * * 0`        | For each user → LLM regenerates profile from last 7 days summaries. Hard memories are tracked for delta triggers but not fed into the profile (they're injected into the system prompt separately). |
 | Raw prune       | `0 4 1 * *`        | Drop raw_conversations > 90 days old. Summaries kept forever. |
 | Delta trigger   | on-write           | When user accumulates ≥10 new hard memories since last profile run, refresh profile immediately. |
 

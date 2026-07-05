@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { getProfile } from '../db/repo.js';
-import { runDailySummary, runWeeklyProfile } from '../cron/jobs.js';
+import { runDailySummaryForUser, regenerateProfileForUser } from '../cron/jobs.js';
+import { regenerateSchema, safeParse } from '../validation.js';
 
 export const profileRoutes = new Hono<{ Variables: { user_id: string } }>();
 
@@ -19,18 +20,22 @@ profileRoutes.get('/', (c) => {
 
 /**
  * POST /api/profile/regenerate
- * Manual trigger for profile regeneration (debug/dev).
+ * Manual trigger for the *current user's* profile regeneration (debug/dev).
+ * Scoped to the authenticated user — never touches other users' data.
  * Body: { scope: 'daily' | 'weekly' }
  */
 profileRoutes.post('/regenerate', async (c) => {
-  const body = await c.req.json().catch(() => ({})) as any;
-  const scope = body.scope ?? 'weekly';
+  const user_id = c.get('user_id');
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = safeParse(regenerateSchema, body);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const scope = parsed.data.scope;
 
+  // Fire-and-forget so the request returns immediately.
   if (scope === 'daily') {
-    runDailySummary().catch(e => console.error('manual daily failed', e));
-    return c.json({ triggered: 'daily', note: 'running in background' });
+    runDailySummaryForUser(user_id).catch(e => console.error('manual daily failed', e));
   } else {
-    runWeeklyProfile().catch(e => console.error('manual weekly failed', e));
-    return c.json({ triggered: 'weekly', note: 'running in background' });
+    regenerateProfileForUser(user_id, 'manual').catch(e => console.error('manual weekly failed', e));
   }
+  return c.json({ triggered: scope, user_id, note: 'running in background' });
 });

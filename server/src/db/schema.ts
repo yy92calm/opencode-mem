@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS daily_summaries (
 
 CREATE INDEX IF NOT EXISTS idx_summary_user_date ON daily_summaries(user_id, date DESC);
 
--- User profiles (LLM-generated from summaries + hard memories)
+-- User profiles (LLM-generated from daily summaries; hard memories injected separately by plugin)
 CREATE TABLE IF NOT EXISTS user_profiles (
   user_id TEXT PRIMARY KEY,
   content TEXT NOT NULL,

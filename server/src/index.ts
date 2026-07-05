@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
-import { loadConfig } from './config/index.js';
+import { getConfig } from './config/index.js';
 import { initDb } from './db/schema.js';
 import { initLLM } from './llm/client.js';
 import { startCron } from './cron/jobs.js';
@@ -11,7 +11,7 @@ import { memoryRoutes } from './routes/memory.js';
 import { profileRoutes } from './routes/profile.js';
 
 function bootstrap() {
-  const cfg = loadConfig();
+  const cfg = getConfig();
   initDb(cfg.db_path);
   initLLM(cfg.llm);
 

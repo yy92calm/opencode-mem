@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { insertRaw, insertRawBatch, countRawByDate } from '../db/repo.js';
+import { rawItemSchema, rawBatchSchema, safeParse } from '../validation.js';
 
 export const rawRoutes = new Hono<{ Variables: { user_id: string } }>();
 
@@ -10,15 +11,19 @@ export const rawRoutes = new Hono<{ Variables: { user_id: string } }>();
  */
 rawRoutes.post('/', async (c) => {
   const user_id = c.get('user_id');
-  const body = await c.req.json() as any;
+  const body = await c.req.json().catch(() => null);
 
-  if (Array.isArray(body.items)) {
-    const items = body.items.map((r: any) => ({ ...r, user_id }));
+  if (body && Array.isArray(body.items)) {
+    const parsed = safeParse(rawBatchSchema, body);
+    if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+    const items = parsed.data.items.map(r => ({ ...r, user_id }));
     const n = insertRawBatch(items);
     return c.json({ inserted: n });
   }
 
-  const id = insertRaw({ ...body, user_id });
+  const parsed = safeParse(rawItemSchema, body);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const id = insertRaw({ ...parsed.data, user_id });
   return c.json({ id });
 });
 

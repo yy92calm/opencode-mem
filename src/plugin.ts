@@ -52,6 +52,8 @@ function fillDefaults(cfg: MemPluginConfig): Required<MemPluginConfig> {
     offline_cache_path: cfg.offline_cache_path ?? DEFAULT_OFFLINE_CACHE,
     offline_cache_max_bytes: cfg.offline_cache_max_bytes ?? 10 * 1024 * 1024,
     profile_cache_path: cfg.profile_cache_path ?? DEFAULT_PROFILE_CACHE,
+    profile_cache_ttl_ms: cfg.profile_cache_ttl_ms ?? 60_000,
+    memories_cache_ttl_ms: cfg.memories_cache_ttl_ms ?? 30_000,
   };
 }
 
@@ -188,7 +190,7 @@ export const MemPlugin: Plugin = async ({ client, directory }: PluginInput) => {
         description: 'Search hard memories by keyword (full-text)',
         args: {
           query: z.string().describe('Search query'),
-          limit: z.number().optional().default(20),
+          limit: z.number().optional().default(50),
         },
         execute: async (args) => {
           const items = await worker.searchMemories(args.query, args.limit);

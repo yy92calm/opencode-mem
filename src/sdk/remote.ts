@@ -35,6 +35,10 @@ export class WorkerClient {
   private shuttingDown = false;
   private signalHandlers: { sig: NodeJS.Signals; fn: () => void }[] = [];
 
+  // In-memory caches to avoid hitting the Worker on every chat turn.
+  private profileCache: { value: string; at: number } | null = null;
+  private memoriesCache: { value: HardMemory[]; at: number } | null = null;
+
   constructor(private cfg: Required<MemPluginConfig>, private log: LogFn) {
     this.startFlushTimer();
     this.startWatchdog();
@@ -121,6 +125,8 @@ export class WorkerClient {
     try {
       const result = await this.post<{ id: number }>('/api/memory', m);
       this.healthy = true;
+      // New memory changes the list — invalidate the memories cache.
+      this.memoriesCache = null;
       return result;
     } catch (e) {
       this.log('warn', 'hard memory send failed, caching offline', { title: m.title, error: String(e) });
@@ -131,7 +137,13 @@ export class WorkerClient {
   }
 
   async getProfile(): Promise<string | null> {
-    // Try network first with a short timeout (won't block chat startup for long).
+    // In-memory cache first (avoids per-turn network round-trip).
+    const ttl = this.cfg.profile_cache_ttl_ms;
+    if (ttl > 0 && this.profileCache && Date.now() - this.profileCache.at < ttl) {
+      return this.profileCache.value;
+    }
+
+    // Try network with a short timeout (won't block chat startup for long).
     try {
       const result = await this.get<{ content?: string; profile?: string | null }>(
         '/api/profile',
@@ -140,8 +152,8 @@ export class WorkerClient {
       if (result) {
         const content = (result as any).content ?? null;
         if (content) {
-          // Cache for offline use.
           this.writeProfileCache(content);
+          this.profileCache = { value: content, at: Date.now() };
           return content;
         }
       }
@@ -182,11 +194,17 @@ export class WorkerClient {
   }
 
   async listMemories(limit = 100): Promise<HardMemory[]> {
+    const ttl = this.cfg.memories_cache_ttl_ms;
+    if (ttl > 0 && this.memoriesCache && Date.now() - this.memoriesCache.at < ttl) {
+      return this.memoriesCache.value;
+    }
     try {
       const result = await this.get<{ items: HardMemory[] }>(`/api/memory?limit=${limit}`);
-      return result?.items ?? [];
+      const items = result?.items ?? [];
+      this.memoriesCache = { value: items, at: Date.now() };
+      return items;
     } catch {
-      return [];
+      return this.memoriesCache?.value ?? [];
     }
   }
 
@@ -214,37 +232,58 @@ export class WorkerClient {
     const healthy = await this.checkHealth(true);
     if (!healthy) return 0;
 
-    const rawItems: RawConversation[] = [];
-    const memItems: HardMemory[] = [];
-    const remaining: string[] = [];
-
+    // Parse entries, keep original line so failures can be re-written verbatim.
+    const entries: { kind: string; payload: any; line: string }[] = [];
     for (const line of lines) {
       try {
         const entry = JSON.parse(line);
-        if (entry.kind === 'raw') rawItems.push(entry.payload);
-        else if (entry.kind === 'memory') memItems.push(entry.payload);
+        if (entry.kind === 'raw' || entry.kind === 'memory') {
+          entries.push({ kind: entry.kind, payload: entry.payload, line });
+        }
       } catch {
         // drop unparseable lines
       }
     }
 
+    const failed: string[] = [];
     let replayed = 0;
-    try {
-      if (rawItems.length > 0) {
-        await this.post('/api/raw', { items: rawItems });
-        replayed += rawItems.length;
+
+    // Raw entries go up as one batch. If the batch fails, keep all raw lines.
+    const rawEntries = entries.filter(e => e.kind === 'raw');
+    if (rawEntries.length > 0) {
+      try {
+        await this.post('/api/raw', { items: rawEntries.map(e => e.payload) });
+        replayed += rawEntries.length;
+      } catch (e) {
+        this.log('warn', 'offline raw batch failed, keeping for retry', {
+          count: rawEntries.length, error: String(e),
+        });
+        for (const e of rawEntries) failed.push(e.line);
+        this.healthy = false;
       }
-      for (const m of memItems) {
-        await this.post('/api/memory', m);
+    }
+
+    // Memories go up one-by-one so a single bad entry doesn't block the rest.
+    for (const entry of entries.filter(e => e.kind === 'memory')) {
+      try {
+        await this.post('/api/memory', entry.payload);
         replayed += 1;
+      } catch (e) {
+        this.log('warn', 'offline memory replay failed, keeping for retry', {
+          title: entry.payload?.title, error: String(e),
+        });
+        failed.push(entry.line);
+        this.healthy = false;
       }
-      // Success — clear cache
+    }
+
+    // Rewrite cache with only the entries that didn't make it.
+    if (failed.length > 0) {
+      writeFileSync(path, failed.join('\n') + '\n');
+      this.log('warn', 'offline replay partial failure', { replayed, remaining: failed.length });
+    } else {
       writeFileSync(path, '');
       this.log('info', 'offline replay ok', { replayed });
-    } catch (e) {
-      // Re-write everything that wasn't successfully sent
-      this.log('warn', 'offline replay partial failure', { error: String(e) });
-      writeFileSync(path, remaining.join('\n'));
     }
     return replayed;
   }

@@ -48,4 +48,8 @@ export interface MemPluginConfig {
   offline_cache_max_bytes?: number;
   /** Local cached profile path (default ~/.config/opencode/mem/profile.cache.md) */
   profile_cache_path?: string;
+  /** In-memory profile cache TTL ms (default 60000 = 1 min). 0 disables. */
+  profile_cache_ttl_ms?: number;
+  /** In-memory hard-memories cache TTL ms (default 30000 = 30s). 0 disables. */
+  memories_cache_ttl_ms?: number;
 }

@@ -1,5 +1,5 @@
 import { getLLM } from './client.js';
-import type { RawConversation, HardMemory, DailySummary } from '../types/index.js';
+import type { RawConversation, DailySummary } from '../types/index.js';
 
 const DAILY_SUMMARY_SYSTEM = `You analyze a developer's coding session conversations and produce a concise daily summary.
 
@@ -16,14 +16,14 @@ Be specific. Skip filler like "user asked questions". Focus on signals useful fo
 
 const PROFILE_SYSTEM = `You generate or update a developer's persistent profile, used to give future AI assistants context about who they're helping.
 
-Input: recent daily summaries + hard memories.
+Input: recent daily summaries (distilled from observed conversations).
 
-CRITICAL: Hard memories are injected SEPARATELY into the system prompt. The profile must NOT contain ANY information from hard memories. Only use daily summaries to build the profile.
+The profile captures what is OBSERVED about the user from their behavior. Explicit, user-asserted facts are tracked separately and injected into the system prompt independently — therefore this profile must NOT duplicate them. Focus on patterns, stack, and working style inferred from the daily summaries.
 
 Output: a Markdown profile under 60 lines, with these sections:
 
 ## Identity & Context
-(2-3 lines: what kind of work they do, primary environment — from daily summaries only)
+(2-3 lines: what kind of work they do, primary environment)
 
 ## Stack & Tools
 (bullet list of confirmed tech from daily summaries: languages, frameworks, build tools, editors)
@@ -38,7 +38,7 @@ Output: a Markdown profile under 60 lines, with these sections:
 (2-3 bullets: themes from the last week)
 
 If daily summaries are empty or insufficient, leave sections as "(pending more data)".
-Do NOT invent facts. Do NOT repeat hard memory content.`;
+Do NOT invent facts.`;
 
 export interface DailySummaryResult {
   date: string;
@@ -103,26 +103,24 @@ export async function generateDailySummary(
   };
 }
 
+/**
+ * Generate a user profile from daily summaries only.
+ * Hard memories are intentionally excluded — they're injected into the
+ * system prompt separately by the plugin, so including them here would
+ * duplicate content and blur the observed/asserted distinction.
+ */
 export async function generateProfile(
   user_id: string,
   summaries: DailySummary[],
-  hardMemories: HardMemory[],
 ): Promise<string> {
   const summariesText = summaries
     .map(s => `### ${s.date} (${s.raw_count} msgs)\n${s.content}`)
     .join('\n\n');
 
-  const memoriesText = hardMemories
-    .map(m => `- [${m.type}] ${m.title}: ${m.content.slice(0, 300)}`)
-    .join('\n');
-
   const userContent = `User: ${user_id}
 
 === Recent Daily Summaries ===
 ${summariesText || '(none)'}
-
-=== Hard Memories (user-asserted) ===
-${memoriesText || '(none)'}
 
 Generate the profile now.`;
 

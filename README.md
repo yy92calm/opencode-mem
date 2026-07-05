@@ -108,6 +108,8 @@ All thresholds are tunable in the plugin config:
 | `write_timeout_ms`           | 15 000  | POST request timeout |
 | `read_timeout_ms`            | 10 000  | GET request timeout |
 | `profile_fetch_timeout_ms`   | 2 000   | Tight cap for chat-startup profile fetch |
+| `profile_cache_ttl_ms`       | 60 000  | In-memory profile cache TTL (0 disables) |
+| `memories_cache_ttl_ms`      | 30 000  | In-memory hard-memories cache TTL (0 disables) |
 | `offline_cache_path`         | `~/.config/opencode/mem/offline.jsonl` | JSONL append-log |
 | `offline_cache_max_bytes`    | `10485760` | Rotation threshold (10 MB) |
 | `profile_cache_path`         | `~/.config/opencode/mem/profile.cache.md` | Last-known profile |

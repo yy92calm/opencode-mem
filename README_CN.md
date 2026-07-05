@@ -108,6 +108,8 @@ export MEM_API_KEY=<步骤1中设置的相同 key>
 | `write_timeout_ms`           | 15 000 | POST 请求超时 |
 | `read_timeout_ms`            | 10 000 | GET 请求超时 |
 | `profile_fetch_timeout_ms`   | 2 000  | 聊天启动时画像获取的严格超时 |
+| `profile_cache_ttl_ms`       | 60 000 | 内存画像缓存 TTL（0 禁用） |
+| `memories_cache_ttl_ms`      | 30 000 | 内存硬记忆缓存 TTL（0 禁用） |
 | `offline_cache_path`         | `~/.config/opencode/mem/offline.jsonl` | JSONL 追加日志 |
 | `offline_cache_max_bytes`    | `10485760` | 轮转阈值 (10 MB) |
 | `profile_cache_path`         | `~/.config/opencode/mem/profile.cache.md` | 最后已知画像 |

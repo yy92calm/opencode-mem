@@ -8,9 +8,9 @@ export interface RawConversation {
   session_id: string;
   role: 'user' | 'assistant' | 'tool';
   content: string;
-  tool_name?: string;
-  tool_input?: string;
-  tool_output?: string;
+  tool_name?: string | null;
+  tool_input?: string | null;
+  tool_output?: string | null;
   timestamp: string;
 }
 
@@ -24,7 +24,7 @@ export interface HardMemory {
   concepts: string[];
   source: 'manual' | 'auto-promoted';
   priority: 'high' | 'medium' | 'low';
-  session_id?: string;
+  session_id?: string | null;
   timestamp: string;
 }
 
