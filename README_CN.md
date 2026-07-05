@@ -36,7 +36,7 @@
 | 时间                   | 任务                                                       |
 |------------------------|-----------------------------------------------------------|
 | 每天 03:00             | LLM 将昨天的原始对话提炼为每日摘要                          |
-| 每周日 03:00           | LLM 合并最近 7 天摘要 + 所有硬记忆 → 用户画像               |
+| 每周日 03:00           | LLM 从最近 7 天摘要构建用户画像（硬记忆单独注入）          |
 | 用户新增 ≥10 条硬记忆时 | LLM 立即刷新用户画像                                        |
 
 Worker 是唯一数据源。插件除一个小型 JSONL 离线缓存外无本地存储（仅在 Worker 不可达时使用）。
@@ -61,7 +61,7 @@ npm run dev                                # 或 `docker compose up -d`
 ```bash
 npm install
 npm run build:all
-npm run install:opencode                   # 复制 bundle 到 ~/.config/opencode/plugins/
+npm run install:opencode                   # 复制 bundle + skills 到 ~/.config/opencode/
 ```
 
 ### 3. 配置插件
@@ -96,6 +96,7 @@ export MEM_API_KEY=<步骤1中设置的相同 key>
 | Worker 会话中恢复 | 后台看门狗（默认 5 分钟）自动重放缓存 |
 | 进程被终止 (SIGTERM/SIGINT) | 内存缓冲区在退出前刷新到离线缓存 |
 | 缓存无限增长 | 达到 10 MB 时轮转为 `.jsonl.bak`（覆盖旧 `.bak`） |
+| 缓存含无效条目 | 4xx（服务端拒绝）条目作为死信丢弃；5xx/网络错误重试 |
 | 聊天启动时高延迟 | 画像获取限制 2 秒超时，回退到本地缓存 |
 
 所有阈值可在插件配置中调整：
@@ -136,7 +137,7 @@ Worker 只是一个 HTTP 服务。部署在符合你信任边界的位置：
 | `mem-profile`  | 获取最新用户画像                                   |
 | `mem-health`   | 检查 Worker 连接 + 排空离线缓存                    |
 
-[`skills/`](./skills/) 中的 5 个 skill 与之前版本相同 — 它们现在都路由到 `mem-capture`。
+[`skills/`](./skills/) 中的 4 个 skill 封装插件工具。`mem-remember` 是触发词 skill，路由到 `mem-capture`；其余（`mem-capture`、`mem-search`、`mem-profile`）各自封装同名工具。
 
 ## 从 v1 迁移（本地 Markdown）
 

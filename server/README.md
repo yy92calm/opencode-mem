@@ -1,6 +1,6 @@
 # opencode-mem-worker
 
-Centralized memory backend for [opencode-mem-plugin](../). Stateless HTTP service backed by SQLite, with cron-driven profile generation.
+Centralized memory backend for [opencode-mem-plugin](../). HTTP service backed by SQLite, with cron-driven profile generation.
 
 ## What it does
 
@@ -145,11 +145,14 @@ profile_meta        (delta tracking)
   └─ last_hard_memory_id per user
 ```
 
-## Security checklist
+## Security & operations checklist
 
 - ✅ Bearer auth on all `/api/*`
 - ✅ User isolation: API key → user_id mapping, all queries scoped
 - ✅ Per-user FTS5 query parameterized + quoted
+- ✅ Request body validation (zod) on all write endpoints
+- ✅ Config validation: cron expressions, port range, non-empty/duplicate credentials
+- ✅ Graceful shutdown: SIGTERM/SIGINT stops cron, closes connections, checkpoints WAL before exit
 - ⚠️ Set `CORS_ORIGIN` explicitly in production (default `*`)
 - ⚠️ Don't expose port 3777 publicly without a reverse proxy + TLS
 - ⚠️ Rotate `LLM_API_KEY` and user API keys periodically

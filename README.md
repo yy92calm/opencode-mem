@@ -36,7 +36,7 @@ This monorepo has two parts:
 | When                   | What                                                      |
 |------------------------|-----------------------------------------------------------|
 | Every day at 03:00     | LLM distills yesterday's raw conversations → daily summary |
-| Every Sunday at 03:00  | LLM merges last 7 daily summaries + all hard memories → user profile |
+| Every Sunday at 03:00  | LLM builds profile from last 7 daily summaries (hard memories injected separately) |
 | When user adds ≥10 new hard memories | LLM refreshes profile immediately                |
 
 The Worker is the only source of truth. The plugin has no local storage beyond a small JSONL offline cache (used only when the Worker is unreachable).
@@ -61,7 +61,7 @@ See [`server/README.md`](./server/README.md) for full deployment + API docs.
 ```bash
 npm install
 npm run build:all
-npm run install:opencode                   # copies bundle to ~/.config/opencode/plugins/
+npm run install:opencode                   # copies bundle + skills to ~/.config/opencode/
 ```
 
 ### 3. Configure the plugin
@@ -96,6 +96,7 @@ Designed to fail gracefully when the Worker is unreachable:
 | Worker recovers mid-session | Background watchdog (5 min default) replays cache automatically |
 | Process killed (SIGTERM/SIGINT) | In-memory buffer flushed to offline cache before exit |
 | Cache grows unboundedly | Rotated to `.jsonl.bak` at 10 MB (overwrites prior `.bak`) |
+| Cache contains invalid entries | 4xx (server-rejected) entries dropped as dead letters; 5xx/network errors retry |
 | High latency on chat startup | Profile fetch capped at 2 s timeout, falls back to local cache |
 
 All thresholds are tunable in the plugin config:
@@ -136,7 +137,7 @@ The plugin only sees `server_url`. Same binary, same config schema, different ne
 | `mem-profile`  | Fetch latest user profile                        |
 | `mem-health`   | Check Worker connectivity + drain offline cache |
 
-The 5 skills in [`skills/`](./skills/) are unchanged from the prior version — they all route to `mem-capture` now.
+The 4 skills in [`skills/`](./skills/) wrap the plugin tools. `mem-remember` is a trigger-word skill that routes to `mem-capture`; the others (`mem-capture`, `mem-search`, `mem-profile`) each wrap their same-named tool.
 
 ## Migration from v1 (local Markdown)
 
