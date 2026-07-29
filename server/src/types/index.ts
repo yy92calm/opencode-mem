@@ -69,6 +69,12 @@ export interface CronConfig {
 export interface ServerConfig {
   port: number;
   db_path: string;
+  /**
+   * IANA timezone (e.g. "Asia/Shanghai", "UTC"). Used for daily-summary date
+   * math and SQLite localtime() so raw timestamps are bucketed into the
+   * calendar day the user actually experienced. Default: host tz.
+   */
+  tz: string;
   llm: LLMConfig;
   users: UserBinding[];
   cron: CronConfig;

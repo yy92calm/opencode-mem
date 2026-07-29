@@ -4,6 +4,11 @@
 port: 3777
 db_path: ./data/memory.db
 
+# Timezone for daily-summary date math + SQLite localtime() bucketing.
+# Keep this aligned with the process/host TZ (e.g. set TZ env in Docker),
+# otherwise daily summaries may bucket the wrong calendar day.
+tz: Asia/Shanghai
+
 llm:
   # Works with any OpenAI-compatible endpoint:
   #   OpenAI      → https://api.openai.com/v1

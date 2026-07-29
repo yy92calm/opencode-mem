@@ -8,9 +8,11 @@ services:
       - ./data:/app/data
       - ./config.yaml:/app/config.yaml:ro
     environment:
-      # All values referenced as ${VAR} in config.yaml must be set here or in .env
+      # All values referenced as ${VAR} in config.yaml must be set here or in .env.
+      # TZ must match config.yaml's `tz:` so SQLite localtime() and JS agree on the day.
+      - TZ=${TZ:-Asia/Shanghai}
       - LLM_API_KEY=${LLM_API_KEY}
-      - USER_VINCENT_KEY=${USER_VINCENT_KEY}
+      - USER_DAVIDYANG_KEY=${USER_DAVIDYANG_KEY}
       - CORS_ORIGIN=${CORS_ORIGIN:-*}
     restart: unless-stopped
     healthcheck:

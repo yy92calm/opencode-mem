@@ -28,6 +28,11 @@ export const hardMemorySchema = z.object({
 
 export const regenerateSchema = z.object({
   scope: z.enum(['daily', 'weekly']).default('weekly'),
+  /**
+   * Optional date (YYYY-MM-DD) for scope='daily'. Defaults to yesterday in the
+   * configured tz. Lets callers backfill a specific day's summary.
+   */
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 });
 
 /** Parse with a schema; returns { ok, data, error }. */

@@ -30,12 +30,13 @@ profileRoutes.post('/regenerate', async (c) => {
   const parsed = safeParse(regenerateSchema, body);
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const scope = parsed.data.scope;
+  const date = parsed.data.date;
 
   // Fire-and-forget so the request returns immediately.
   if (scope === 'daily') {
-    runDailySummaryForUser(user_id).catch(e => console.error('manual daily failed', e));
+    runDailySummaryForUser(user_id, date).catch(e => console.error('manual daily failed', e));
   } else {
     regenerateProfileForUser(user_id, 'manual').catch(e => console.error('manual weekly failed', e));
   }
-  return c.json({ triggered: scope, user_id, note: 'running in background' });
+  return c.json({ triggered: scope, user_id, date: date ?? 'yesterday', note: 'running in background' });
 });

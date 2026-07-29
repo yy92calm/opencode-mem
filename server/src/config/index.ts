@@ -73,9 +73,21 @@ export function loadConfig(path: string = DEFAULT_CONFIG_PATH): ServerConfig {
     throw new Error(`Config: invalid cron expression for weekly_profile: "${weeklyExpr}"`);
   }
 
+  // Timezone for daily-summary date math + SQLite localtime() bucketing.
+  // Defaults to the host's system tz. Validate IANA names so a typo fails fast
+  // instead of silently bucketing everything under UTC.
+  const tz = expanded.tz ?? (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+  try {
+    // Resolving a tz throws on invalid names; cheap validation.
+    new Intl.DateTimeFormat('en-CA', { timeZone: tz });
+  } catch {
+    throw new Error(`Config: invalid tz "${tz}" (use an IANA name e.g. "Asia/Shanghai")`);
+  }
+
   return {
     port,
     db_path: expanded.db_path ?? './data/memory.db',
+    tz,
     llm: {
       provider: expanded.llm.provider ?? 'openai-compatible',
       base_url: expanded.llm.base_url ?? 'https://api.openai.com/v1',

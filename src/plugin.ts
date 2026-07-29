@@ -5,7 +5,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { WorkerClient } from './sdk/remote.js';
 import { setLoggerClient, logger } from './utils/logger.js';
-import { isTrivial, extractFilePath, isFileRead, isFileWrite, safeStringify } from './utils/observer.js';
+import { isTrivial, safeStringify } from './utils/observer.js';
 import type { MemPluginConfig, HardMemory } from './types/index.js';
 
 const SERVICE = 'opencode-mem';

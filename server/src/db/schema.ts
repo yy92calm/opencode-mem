@@ -16,7 +16,26 @@ export function initDb(dbPath: string): Database.Database {
   db.pragma('synchronous = NORMAL');
 
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+/**
+ * Lightweight idempotent migrations for pre-existing databases.
+ * CREATE TABLE IF NOT EXISTS above handles fresh DBs; this fixes legacy ones.
+ */
+function migrate(database: Database.Database): void {
+  // Drop legacy profile_meta.last_check_at column (written but never read).
+  // Guarded by a column-existence check so it runs once and never errors on
+  // databases that never had the column.
+  const cols = database.prepare(`PRAGMA table_info(profile_meta)`).all() as { name: string }[];
+  if (cols.some(c => c.name === 'last_check_at')) {
+    try {
+      database.exec(`ALTER TABLE profile_meta DROP COLUMN last_check_at`);
+    } catch {
+      /* SQLite < 3.35 has no DROP COLUMN; leave the column in place — it's harmless once unused. */
+    }
+  }
 }
 
 export function getDb(): Database.Database {
@@ -124,7 +143,6 @@ CREATE TABLE IF NOT EXISTS user_profiles (
 -- Track when each user last had their profile recomputed (for delta triggers)
 CREATE TABLE IF NOT EXISTS profile_meta (
   user_id TEXT PRIMARY KEY,
-  last_hard_memory_id INTEGER NOT NULL DEFAULT 0,
-  last_check_at TEXT NOT NULL
+  last_hard_memory_id INTEGER NOT NULL DEFAULT 0
 );
 `;

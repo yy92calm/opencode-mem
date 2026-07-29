@@ -77,16 +77,31 @@ export async function generateDailySummary(
   // Cap context to avoid blowing up token limits (~50k chars ≈ 12k tokens)
   const formatted = formatRawForLLM(raws).slice(0, 50000);
 
-  const response = await getLLM().chat([
-    { role: 'system', content: DAILY_SUMMARY_SYSTEM },
+  const messages = [
+    { role: 'system' as const, content: DAILY_SUMMARY_SYSTEM },
     {
-      role: 'user',
+      role: 'user' as const,
       content: `Date: ${date}\nUser: ${user_id}\n\nConversations:\n${formatted}\n\nReturn JSON only.`,
     },
-  ], {
-    temperature: 0.2,
-    response_format: { type: 'json_object' },
-  });
+  ];
+
+  // Prefer structured JSON output. Some OpenAI-compatible endpoints (Ollama,
+  // certain Volc/Together deployments) reject the response_format field with a
+  // 4xx. On that, retry once without it and parse the model's free-form output.
+  let response: string;
+  try {
+    response = await getLLM().chat(messages, {
+      temperature: 0.2,
+      response_format: { type: 'json_object' },
+    });
+  } catch (e) {
+    const msg = String(e);
+    if (/\b4\d{2}\b/.test(msg) || /response_format/i.test(msg)) {
+      response = await getLLM().chat(messages, { temperature: 0.2 });
+    } else {
+      throw e;
+    }
+  }
 
   let parsed: any;
   try {

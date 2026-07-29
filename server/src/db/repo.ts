@@ -39,14 +39,17 @@ export function insertRawBatch(items: Omit<RawConversation, 'id'>[]): number {
 }
 
 export function listRawByDate(user_id: string, date: string): RawConversation[] {
+  // Match by the configured timezone, not UTC. raw_conversations.timestamp is
+  // stored as an ISO (UTC) string; localtime() shifts it to the server's tz so
+  // the calendar day the user actually experienced is the one summarized.
   return getDb()
-    .prepare(`SELECT * FROM raw_conversations WHERE user_id = ? AND date(timestamp) = ? ORDER BY timestamp ASC`)
+    .prepare(`SELECT * FROM raw_conversations WHERE user_id = ? AND date(datetime(timestamp, 'localtime')) = ? ORDER BY timestamp ASC`)
     .all(user_id, date) as RawConversation[];
 }
 
 export function countRawByDate(user_id: string, date: string): number {
   const row = getDb()
-    .prepare(`SELECT COUNT(*) as c FROM raw_conversations WHERE user_id = ? AND date(timestamp) = ?`)
+    .prepare(`SELECT COUNT(*) as c FROM raw_conversations WHERE user_id = ? AND date(datetime(timestamp, 'localtime')) = ?`)
     .get(user_id, date) as { c: number };
   return row.c;
 }
@@ -83,8 +86,13 @@ export function listHard(user_id: string, limit = 100): HardMemory[] {
 
 export function searchHard(user_id: string, query: string, limit = 50): HardMemory[] {
   if (!query.trim()) return listHard(user_id, limit);
-  // Escape FTS5 special chars by quoting the whole query
-  const safe = `"${query.replace(/"/g, '""')}"`;
+  // Build an FTS5 query from whitespace-separated terms. Each term is wrapped
+  // in double-quotes (FTS5 "phrase"), and terms are space-separated so FTS5
+  // implicitly ANDs them. This matches the keyword-search expectation: every
+  // word must occur, but not necessarily adjacently (unlike quoting the whole
+  // string, which would only match the exact multi-word phrase).
+  const terms = query.trim().split(/\s+/);
+  const safe = terms.map(t => `"${t.replace(/"/g, '""')}"`).join(' ');
   const rows = getDb()
     .prepare(`
       SELECT h.* FROM hard_memories_fts fts
@@ -107,6 +115,14 @@ export function countHardSince(user_id: string, sinceId: number): number {
   const row = getDb()
     .prepare(`SELECT COUNT(*) as c FROM hard_memories WHERE user_id = ? AND id > ?`)
     .get(user_id, sinceId) as { c: number };
+  return row.c;
+}
+
+/** Total hard memory count for a user. Cheaper than listHard when rows aren't needed. */
+export function countHard(user_id: string): number {
+  const row = getDb()
+    .prepare(`SELECT COUNT(*) as c FROM hard_memories WHERE user_id = ?`)
+    .get(user_id) as { c: number };
   return row.c;
 }
 
@@ -176,21 +192,20 @@ export function getProfile(user_id: string): UserProfile | null {
 
 // ===== Profile meta (delta tracking) =====
 
-export function getProfileMeta(user_id: string): { last_hard_memory_id: number; last_check_at: string } {
+export function getProfileMeta(user_id: string): { last_hard_memory_id: number } {
   const row = getDb()
-    .prepare(`SELECT last_hard_memory_id, last_check_at FROM profile_meta WHERE user_id = ?`)
+    .prepare(`SELECT last_hard_memory_id FROM profile_meta WHERE user_id = ?`)
     .get(user_id) as any;
-  return row ?? { last_hard_memory_id: 0, last_check_at: '1970-01-01' };
+  return row ?? { last_hard_memory_id: 0 };
 }
 
 export function updateProfileMeta(user_id: string, last_hard_memory_id: number): void {
   getDb()
     .prepare(`
-      INSERT INTO profile_meta (user_id, last_hard_memory_id, last_check_at)
-      VALUES (?, ?, datetime('now'))
+      INSERT INTO profile_meta (user_id, last_hard_memory_id)
+      VALUES (?, ?)
       ON CONFLICT(user_id) DO UPDATE SET
-        last_hard_memory_id = excluded.last_hard_memory_id,
-        last_check_at = excluded.last_check_at
+        last_hard_memory_id = excluded.last_hard_memory_id
     `)
     .run(user_id, last_hard_memory_id);
 }

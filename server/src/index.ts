@@ -14,10 +14,30 @@ function log(level: string, msg: string, extra?: object) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), level, scope: 'boot', msg, ...(extra || {}) }));
 }
 
+/**
+ * Warn if the configured tz doesn't match the process's actual system tz.
+ *
+ * Daily summaries bucket raw timestamps by calendar day. The JS side
+ * (yesterdayDate) honors config.tz, but SQLite's localtime() follows the
+ * process's C-library TZ (the host/container tz, not the IANA name). If those
+ * disagree, a day's worth of raws can land in the wrong summary bucket.
+ *
+ * Set the process tz to match config.tz (e.g. `TZ=Asia/Shanghai` env, or the
+ * `tz:` field in docker-compose) to silence this.
+ */
+function checkTimezoneAlignment(configTz: string): void {
+  const processTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  if (processTz !== configTz) {
+    log('warn', `timezone mismatch: config.tz=${configTz} but process tz=${processTz}. ` +
+      `Set the process/host TZ to match config.tz, or daily summaries may bucket the wrong day.`);
+  }
+}
+
 function bootstrap() {
   const cfg = getConfig();
   initDb(cfg.db_path);
   initLLM(cfg.llm);
+  checkTimezoneAlignment(cfg.tz);
 
   const app = new Hono<{ Variables: { user_id: string } }>();
 

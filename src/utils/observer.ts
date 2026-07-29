@@ -4,7 +4,6 @@
  *
  * Client only decides:
  *   - is this worth uploading at all? (trivial filter)
- *   - extract file paths for telemetry
  */
 
 export function isTrivial(tool: string, input: unknown, response: string): boolean {
@@ -20,21 +19,6 @@ export function isTrivial(tool: string, input: unknown, response: string): boole
   }
 
   return false;
-}
-
-export function extractFilePath(tool: string, input: unknown): string | null {
-  const obj = input as Record<string, unknown> | null;
-  if (!obj) return null;
-  const p = (obj.filePath || obj.path) as string | undefined;
-  return p ?? null;
-}
-
-export function isFileWrite(tool: string): boolean {
-  return tool === 'write' || tool === 'edit';
-}
-
-export function isFileRead(tool: string): boolean {
-  return tool === 'read';
 }
 
 /**
