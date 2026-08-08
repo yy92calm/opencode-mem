@@ -14,15 +14,31 @@ export interface RawConversation {
 }
 
 export interface HardMemory {
-  type: 'preference' | 'config' | 'decision' | 'error' | 'discovery' | 'fact';
+  id?: number;
+  type: 'preference' | 'config' | 'decision' | 'error' | 'discovery' | 'fact' | 'constraint' | 'pattern';
   title: string;
   content: string;
   facts: string[];
   concepts: string[];
-  source?: 'manual' | 'auto-promoted';
+  /** manual = user-asserted; auto = Worker-distilled from conversations */
+  source?: 'manual' | 'auto-promoted' | 'auto' | 'summary';
   priority?: 'high' | 'medium' | 'low';
+  status?: 'active' | 'deprecated';
+  usage_count?: number;
+  last_used_at?: string | null;
+  source_date?: string | null;
   session_id?: string;
   timestamp: string;
+}
+
+export interface SkillDraft {
+  id: number;
+  title: string;
+  content_md: string;
+  session_id: string | null;
+  status: 'draft' | 'approved';
+  created_at?: string;
+  approved_at?: string | null;
 }
 
 export interface MemPluginConfig {
@@ -52,4 +68,6 @@ export interface MemPluginConfig {
   profile_cache_ttl_ms?: number;
   /** In-memory hard-memories cache TTL ms (default 30000 = 30s). 0 disables. */
   memories_cache_ttl_ms?: number;
+  /** Char budget for the memories section injected into each turn (default 6000). */
+  inject_char_budget?: number;
 }

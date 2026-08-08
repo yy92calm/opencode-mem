@@ -15,7 +15,7 @@ export const rawBatchSchema = z.object({
 });
 
 export const hardMemorySchema = z.object({
-  type: z.enum(['preference', 'config', 'decision', 'error', 'discovery', 'fact']).default('fact'),
+  type: z.enum(['preference', 'config', 'decision', 'error', 'discovery', 'fact', 'constraint', 'pattern']).default('fact'),
   title: z.string().min(1).max(500).default('(untitled)'),
   content: z.string().default(''),
   facts: z.array(z.string()).default([]),
@@ -24,6 +24,10 @@ export const hardMemorySchema = z.object({
   priority: z.enum(['high', 'medium', 'low']).default('high'),
   session_id: z.string().nullable().optional(),
   timestamp: z.string().default(() => new Date().toISOString()),
+});
+
+export const memoryStatusSchema = z.object({
+  status: z.enum(['active', 'deprecated']),
 });
 
 export const regenerateSchema = z.object({

@@ -36,3 +36,5 @@ cron:
   daily_summary: "0 3 * * *"            # every day at 03:00
   weekly_profile: "0 3 * * 0"           # every Sunday at 03:00
   hard_memory_threshold: 10             # refresh profile after N new "remember" entries
+  auto_distill: true                    # LLM-distill daily raws into atom memories (L1)
+  skill_min_raw_count: 30               # sessions with >= N raw rows are skill-extraction candidates

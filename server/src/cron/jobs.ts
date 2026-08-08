@@ -12,9 +12,21 @@ import {
   countHardSince,
   countHard,
   pruneRawOlderThan,
+  getDistillState,
+  setDistillState,
+  maxRawIdByDate,
+  insertHard,
+  listHard,
+  setHardStatus,
+  updateHardContent,
+  listLongSessions,
+  hasSkillDraftForSession,
+  listRawBySession,
+  insertSkillDraft,
 } from '../db/repo.js';
-import { generateDailySummary, generateProfile } from '../llm/prompts.js';
+import { generateDailySummary, generateProfile, extractAtoms, consolidateMemories, extractSkill } from '../llm/prompts.js';
 import { getConfig } from '../config/index.js';
+import type { RawConversation } from '../types/index.js';
 
 function log(level: string, msg: string, extra?: object) {
   const ts = new Date().toISOString();
@@ -107,20 +119,88 @@ export async function runDailySummaryForUser(user_id: string, date: string = yes
     }
     const raws = listRawByDate(user_id, date);
     const result = await generateDailySummary(user_id, date, raws);
-    if (!result) return false;
+    if (result) {
+      upsertDailySummary({
+        user_id,
+        date,
+        content: result.content,
+        raw_count: result.raw_count,
+        generated_at: new Date().toISOString(),
+      });
+      log('info', `summary ok`, { user_id, date, raw_count: result.raw_count });
+    }
 
-    upsertDailySummary({
-      user_id,
-      date,
-      content: result.content,
-      raw_count: result.raw_count,
-      generated_at: new Date().toISOString(),
-    });
-    log('info', `summary ok`, { user_id, date, raw_count: result.raw_count });
-    return true;
+    // L1 distill runs on the same day's raws even if the summary LLM call
+    // failed — failures are isolated so one pipeline doesn't block the other.
+    if (getConfig().cron.auto_distill) {
+      try {
+        await distillAtomsForUser(user_id, date, raws);
+      } catch (e) {
+        log('error', `atom distill failed`, { user_id, date, error: String(e) });
+      }
+    }
+
+    return result !== null;
   } finally {
     dailyInFlight.delete(key);
   }
+}
+
+/**
+ * L1 distill: extract atomic memories from a day's raw conversations.
+ *
+ * Idempotent via distill_state watermark: rows at or below last_raw_id were
+ * already refined on a previous run and are skipped. Auto atoms are inserted
+ * with source='auto' and NEVER trigger profile refresh (that path only fires
+ * from user-asserted memories via the API route, avoiding self-triggering).
+ */
+async function distillAtomsForUser(user_id: string, date: string, raws: RawConversation[]): Promise<number> {
+  const lastId = getDistillState(user_id, date);
+  const fresh = raws.filter(r => (r.id ?? 0) > lastId);
+  if (fresh.length === 0) return 0;
+
+  // Existing active titles serve double duty: prompt context (steer the LLM
+  // away from re-extracting) and a server-side duplicate gate (belt & braces).
+  const existingTitles = listHard(user_id, 500).map(m => m.title);
+  const known = new Set(existingTitles.map(t => t.trim().toLowerCase()));
+
+  const atoms = await extractAtoms(user_id, date, fresh, existingTitles);
+  const maxId = maxRawIdByDate(user_id, date);
+
+  // Map the 8-char session prefixes the LLM reports back to full session ids.
+  const prefixMap = new Map<string, string>();
+  for (const r of fresh) {
+    prefixMap.set(r.session_id.slice(0, 8), r.session_id);
+  }
+
+  let inserted = 0;
+  for (const atom of atoms) {
+    const key = atom.title.trim().toLowerCase();
+    if (known.has(key)) continue; // cross-day dup or intra-batch dup
+    known.add(key);
+    insertHard({
+      user_id,
+      type: atom.type,
+      title: atom.title,
+      content: atom.content,
+      facts: atom.facts,
+      concepts: atom.concepts,
+      source: 'auto',
+      priority: 'medium',
+      session_id: atom.session ? prefixMap.get(atom.session) ?? null : null,
+      source_date: date,
+      timestamp: new Date().toISOString(),
+    });
+    inserted++;
+  }
+
+  // Advance the watermark even when zero atoms were extracted — those raws
+  // have been considered; re-running must not pay for another LLM call.
+  setDistillState(user_id, date, Math.max(maxId, lastId));
+  if (inserted > 0 || atoms.length > 0) {
+    log('info', `atoms distilled`, { user_id, date, extracted: atoms.length, inserted, raws: fresh.length });
+  }
+  return inserted;
 }
 
 /**
@@ -215,6 +295,91 @@ export async function runRawPrune(): Promise<void> {
   log('info', `prune raw`, { deleted });
 }
 
+/**
+ * Monthly consolidation: LLM merges duplicates and deprecates stale memories.
+ * Never deletes — merged-away and stale items are marked 'deprecated' so the
+ * audit trail survives. Runs right after the monthly raw prune.
+ */
+export async function runMonthlyConsolidate(): Promise<void> {
+  const users = listAllUsers();
+  log('info', `monthly_consolidate start`, { users: users.length });
+
+  for (const user_id of users) {
+    try {
+      // Cap input so pathological stores can't blow the context window.
+      const memories = listHard(user_id, 300);
+      if (memories.length < 5) continue;
+
+      const plan = await consolidateMemories(memories);
+      let merged = 0;
+      let deprecated = 0;
+
+      for (const m of plan.merge) {
+        if (m.title) {
+          updateHardContent(m.keep_id, {
+            title: m.title,
+            content: m.content || undefined,
+            facts: m.facts.length ? m.facts : undefined,
+            concepts: m.concepts.length ? m.concepts : undefined,
+          });
+        }
+        for (const id of m.deprecate_ids) {
+          if (setHardStatus(user_id, id, 'deprecated')) deprecated++;
+        }
+        merged++;
+      }
+      for (const id of plan.deprecate) {
+        if (setHardStatus(user_id, id, 'deprecated')) deprecated++;
+      }
+
+      if (merged > 0 || deprecated > 0) {
+        log('info', `consolidated`, { user_id, merged, deprecated });
+      }
+    } catch (e) {
+      log('error', `consolidate failed`, { user_id, error: String(e) });
+    }
+  }
+}
+
+/**
+ * Weekly skill extraction: long sessions from the past week that ended in
+ * real work are distilled into SKILL.md drafts. Drafts wait for explicit
+ * human approval (POST /api/skills/drafts/:id/approve) — nothing is
+ * auto-installed. Sessions already distilled are skipped.
+ */
+export async function runWeeklySkillExtract(): Promise<void> {
+  const cfg = getConfig();
+  const users = listAllUsers();
+  log('info', `weekly_skill_extract start`, { users: users.length });
+
+  for (const user_id of users) {
+    try {
+      const sessions = listLongSessions(user_id, 7, cfg.cron.skill_min_raw_count);
+      for (const s of sessions.slice(0, 3)) {
+        if (hasSkillDraftForSession(user_id, s.session_id)) continue;
+        const raws = listRawBySession(user_id, s.session_id);
+        // Only sessions that ended on a tool execution look "completed";
+        // a trailing user message usually means unfinished work.
+        const last = raws[raws.length - 1];
+        if (!last || last.role !== 'tool') continue;
+
+        const skill = await extractSkill(user_id, s.session_id, raws);
+        if (skill) {
+          const id = insertSkillDraft({
+            user_id,
+            title: skill.title,
+            content_md: skill.content_md,
+            session_id: s.session_id,
+          });
+          log('info', `skill draft created`, { user_id, id, title: skill.title, session: s.session_id.slice(0, 8) });
+        }
+      }
+    } catch (e) {
+      log('error', `skill extract failed`, { user_id, error: String(e) });
+    }
+  }
+}
+
 let started = false;
 const scheduledTasks: cron.ScheduledTask[] = [];
 
@@ -237,10 +402,19 @@ export function startCron(): void {
     }),
   );
 
-  // prune monthly
+  // prune + consolidate monthly
   scheduledTasks.push(
     cron.schedule('0 4 1 * *', () => {
-      runRawPrune().catch(e => log('error', 'prune uncaught', { error: String(e) }));
+      runRawPrune()
+        .then(() => runMonthlyConsolidate())
+        .catch(e => log('error', 'prune/consolidate uncaught', { error: String(e) }));
+    }),
+  );
+
+  // skill extraction rides the weekly profile schedule
+  scheduledTasks.push(
+    cron.schedule(cfg.cron.weekly_profile, () => {
+      runWeeklySkillExtract().catch(e => log('error', 'skill extract uncaught', { error: String(e) }));
     }),
   );
 }

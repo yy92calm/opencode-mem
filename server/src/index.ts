@@ -9,6 +9,7 @@ import { authMiddleware } from './middleware/auth.js';
 import { rawRoutes } from './routes/raw.js';
 import { memoryRoutes } from './routes/memory.js';
 import { profileRoutes } from './routes/profile.js';
+import { skillRoutes } from './routes/skills.js';
 
 function log(level: string, msg: string, extra?: object) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), level, scope: 'boot', msg, ...(extra || {}) }));
@@ -44,7 +45,7 @@ function bootstrap() {
   // CORS only on /api/*, restricted (override with explicit origin allowlist in prod)
   app.use('/api/*', cors({
     origin: process.env.CORS_ORIGIN?.split(',') ?? '*',
-    allowMethods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   }));
 
   app.get('/health', (c) => c.json({
@@ -59,6 +60,7 @@ function bootstrap() {
   app.route('/api/raw', rawRoutes);
   app.route('/api/memory', memoryRoutes);
   app.route('/api/profile', profileRoutes);
+  app.route('/api/skills', skillRoutes);
 
   app.get('/api/whoami', (c) => c.json({ user_id: c.get('user_id') }));
 

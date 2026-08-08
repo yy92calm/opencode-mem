@@ -35,9 +35,10 @@ This monorepo has two parts:
 
 | When                   | What                                                      |
 |------------------------|-----------------------------------------------------------|
-| Every day at 03:00     | LLM distills yesterday's raw conversations → daily summary |
-| Every Sunday at 03:00  | LLM builds profile from last 7 daily summaries (hard memories injected separately) |
+| Every day at 03:00     | LLM distills yesterday's raw conversations → daily summary + atom memories (`source='auto'`, searchable, traceable) |
+| Every Sunday at 03:00  | LLM builds profile from last 7 daily summaries (hard memories injected separately); long successful sessions → skill drafts (need approval) |
 | When user adds ≥10 new hard memories | LLM refreshes profile immediately                |
+| Monthly (1st, 04:00)   | Raw prune (>90 days) + LLM consolidation (merge duplicates, deprecate stale memories) |
 
 The Worker is the only source of truth. The plugin has no local storage beyond a small JSONL offline cache (used only when the Worker is unreachable).
 
@@ -111,6 +112,7 @@ All thresholds are tunable in the plugin config:
 | `profile_fetch_timeout_ms`   | 2 000   | Tight cap for chat-startup profile fetch |
 | `profile_cache_ttl_ms`       | 60 000  | In-memory profile cache TTL (0 disables) |
 | `memories_cache_ttl_ms`      | 30 000  | In-memory hard-memories cache TTL (0 disables) |
+| `inject_char_budget`         | 6 000   | Char budget for the memories section injected per turn; ranked by source (manual first) → priority → recency, rest reachable via `mem-search` |
 | `offline_cache_path`         | `~/.config/opencode/mem/offline.jsonl` | JSONL append-log |
 | `offline_cache_max_bytes`    | `10485760` | Rotation threshold (10 MB) |
 | `profile_cache_path`         | `~/.config/opencode/mem/profile.cache.md` | Last-known profile |
@@ -127,7 +129,7 @@ The plugin only sees `server_url`. Same binary, same config schema, different ne
 
 ## What the plugin provides
 
-5 tools, all backed by Worker HTTP calls:
+6 tools, all backed by Worker HTTP calls:
 
 | Tool           | Purpose                                          |
 |----------------|--------------------------------------------------|
@@ -135,7 +137,8 @@ The plugin only sees `server_url`. Same binary, same config schema, different ne
 | `mem-search`   | Full-text search hard memories                   |
 | `mem-list`     | List recent hard memories                        |
 | `mem-profile`  | Fetch latest user profile                        |
-| `mem-health`   | Check Worker connectivity + drain offline cache |
+| `mem-health`   | Check Worker connectivity + drain offline cache  |
+| `mem-skill-sync` | Approve/install auto-distilled skill drafts into `~/.config/opencode/skills/` |
 
 The 4 skills in [`skills/`](./skills/) wrap the plugin tools. `mem-remember` is a trigger-word skill that routes to `mem-capture`; the others (`mem-capture`, `mem-search`, `mem-profile`) each wrap their same-named tool.
 

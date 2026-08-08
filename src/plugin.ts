@@ -1,6 +1,6 @@
 import { type Plugin, type PluginInput, tool } from '@opencode-ai/plugin';
 import { z } from 'zod';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { WorkerClient } from './sdk/remote.js';
@@ -54,6 +54,7 @@ function fillDefaults(cfg: MemPluginConfig): Required<MemPluginConfig> {
     profile_cache_path: cfg.profile_cache_path ?? DEFAULT_PROFILE_CACHE,
     profile_cache_ttl_ms: cfg.profile_cache_ttl_ms ?? 60_000,
     memories_cache_ttl_ms: cfg.memories_cache_ttl_ms ?? 30_000,
+    inject_char_budget: cfg.inject_char_budget ?? 6000,
   };
 }
 
@@ -139,6 +140,10 @@ export const MemPlugin: Plugin = async ({ client, directory }: PluginInput) => {
      * Inject the user profile into the system prompt at the start of each turn.
      * Profile is maintained server-side; we just fetch the latest.
      * Note: hook return type is void — we mutate the output array in place.
+     *
+     * Memories are budgeted, not bulk-injected: ranked by source (manual first)
+     * then priority then recency, and cut when the char budget is exhausted.
+     * The rest stays reachable on-demand via mem-search.
      */
     'experimental.chat.system.transform': async (_input, output) => {
       const [profile, memories] = await Promise.all([
@@ -151,8 +156,31 @@ export const MemPlugin: Plugin = async ({ client, directory }: PluginInput) => {
         parts.push(`\n\n## User Profile (auto-maintained)\n\n${profile}`);
       }
       if (memories.length > 0) {
-        const memLines = memories.map(m => `- [${m.type}] ${m.title}: ${m.content.slice(0, 300)}`).join('\n');
-        parts.push(`\n\n## Hard Memories (user-asserted)\n\n${memLines}`);
+        const sourceRank: Record<string, number> = { manual: 0, 'auto-promoted': 1, auto: 2 };
+        const priorityRank: Record<string, number> = { high: 0, medium: 1, low: 2 };
+        const ranked = [...memories].sort((a, b) =>
+          (sourceRank[a.source ?? 'manual'] ?? 0) - (sourceRank[b.source ?? 'manual'] ?? 0) ||
+          (priorityRank[a.priority ?? 'high'] ?? 0) - (priorityRank[b.priority ?? 'high'] ?? 0) ||
+          (b.timestamp || '').localeCompare(a.timestamp || ''),
+        );
+
+        const budget = cfg.inject_char_budget;
+        const lines: string[] = [];
+        let used = 0;
+        let omitted = 0;
+        for (const m of ranked) {
+          const line = `- [${m.type}] ${m.title}: ${m.content.slice(0, 300)}`;
+          if (used + line.length > budget) {
+            omitted++;
+            continue;
+          }
+          lines.push(line);
+          used += line.length;
+        }
+        if (lines.length > 0) {
+          const hint = omitted > 0 ? `\n(${omitted} more memories omitted — use mem-search to recall them)` : '';
+          parts.push(`\n\n## Hard Memories (user-asserted + auto-distilled)\n\n${lines.join('\n')}${hint}`);
+        }
       }
       if (parts.length > 0 && Array.isArray((output as any).system)) {
         (output as any).system.push(parts.join('\n'));
@@ -166,7 +194,7 @@ export const MemPlugin: Plugin = async ({ client, directory }: PluginInput) => {
       'mem-capture': tool({
         description: 'Persist a hard memory (user explicitly asked to remember something)',
         args: {
-          type: z.enum(['preference', 'config', 'decision', 'error', 'discovery', 'fact'])
+          type: z.enum(['preference', 'config', 'decision', 'error', 'discovery', 'fact', 'constraint', 'pattern'])
             .describe('Memory type'),
           title: z.string().describe('Short title summarizing the memory'),
           content: z.string().describe('Full description'),
@@ -238,6 +266,58 @@ export const MemPlugin: Plugin = async ({ client, directory }: PluginInput) => {
             healthy,
             offline_cache_replayed: replayed,
           }, null, 2);
+        },
+      }),
+
+      /**
+       * Sync approved skill drafts from the Worker into ~/.config/opencode/skills/.
+       * Drafts are auto-distilled weekly; nothing lands on disk without the
+       * user approving them server-side first.
+       */
+      'mem-skill-sync': tool({
+        description: 'List Worker skill drafts, optionally approve them and install approved ones into ~/.config/opencode/skills/',
+        args: {
+          approve: z.array(z.number()).optional().default([])
+            .describe('Draft ids to approve before syncing'),
+          install: z.boolean().optional().default(true)
+            .describe('Write approved drafts to ~/.config/opencode/skills/'),
+        },
+        execute: async (args) => {
+          // Approve requested drafts first (one-by-one; failures don't block the rest)
+          for (const id of args.approve ?? []) {
+            await worker.approveSkillDraft(id);
+          }
+
+          const drafts = await worker.listSkillDrafts('approved');
+          if (!args.install) {
+            return drafts.length === 0
+              ? 'No approved skill drafts.'
+              : drafts.map(d => `- #${d.id} ${d.title}`).join('\n');
+          }
+          if (drafts.length === 0) return 'No approved skill drafts to install.';
+
+          const skillsDir = join(homedir(), '.config', 'opencode', 'skills');
+          const installed: string[] = [];
+          const skipped: string[] = [];
+          for (const d of drafts) {
+            const slug = d.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || `skill-${d.id}`;
+            const dir = join(skillsDir, slug);
+            const file = join(dir, 'SKILL.md');
+            // Never clobber an existing skill — human edits win over drafts.
+            if (existsSync(file)) {
+              skipped.push(slug);
+              continue;
+            }
+            try {
+              mkdirSync(dir, { recursive: true });
+              writeFileSync(file, d.content_md, 'utf-8');
+              installed.push(slug);
+            } catch (e) {
+              logger.warn(SERVICE, `skill write failed`, { slug, error: String(e) });
+              skipped.push(slug);
+            }
+          }
+          return JSON.stringify({ installed, skipped_existing: skipped }, null, 2);
         },
       }),
     },

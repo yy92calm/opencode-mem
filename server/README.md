@@ -10,7 +10,10 @@ Centralized memory backend for [opencode-mem-plugin](../). HTTP service backed b
 2. Stores everything in SQLite with FTS5 for hard-memory search
 3. Runs scheduled LLM jobs to produce:
    - **Daily summaries** of raw conversations (every night)
+   - **Atom memories** — auto-distilled atomic facts/decisions/constraints from the same day's raws (L1 layer, `source='auto'`, traceable via `source_date` + `session_id`)
    - **User profiles** synthesizing daily summaries (weekly + on-demand); hard memories are injected into the system prompt separately by the plugin
+   - **Monthly consolidation** — LLM merges duplicates and deprecates stale memories (soft state, nothing deleted)
+   - **Skill drafts** — weekly distillation of long successful sessions into SKILL.md drafts awaiting human approval
 4. Serves the latest profile back to the plugin for context injection
 
 ## Architecture
@@ -61,12 +64,16 @@ All `/api/*` endpoints require `Authorization: Bearer <api_key>`. The api_key re
 | GET    | `/api/whoami`               | Returns the resolved user_id         |
 | POST   | `/api/raw`                  | Upload one or many raw conversations |
 | GET    | `/api/raw/count?date=...`   | Count today/given date raw rows      |
-| POST   | `/api/memory`               | Insert a hard memory                 |
-| GET    | `/api/memory?limit=N`       | List recent hard memories            |
-| GET    | `/api/memory/search?q=...`  | FTS5 search hard memories            |
+| POST   | `/api/memory`               | Insert a hard memory (same-title auto atoms are auto-deprecated) |
+| GET    | `/api/memory?limit=N&include_deprecated=1` | List recent active hard memories    |
+| GET    | `/api/memory/search?q=...&char_budget=8000&min_results=3` | Budgeted two-tier search: hard memories first, daily-summary fallback when under-filled; bumps `usage_count` of served items. Trigram FTS5 + LIKE fallback makes CJK queries work (≥3-char terms via MATCH, shorter terms via LIKE). |
+| PATCH  | `/api/memory/:id`           | Soft status transition `{status: active│deprecated}` |
 | DELETE | `/api/memory/:id`           | Delete one hard memory               |
+| GET    | `/api/memory/stats`         | Per-user store health: counts by source/status, profile freshness, pending skill drafts, most-recalled memories |
 | GET    | `/api/profile`              | Get current user profile (Markdown)  |
 | POST   | `/api/profile/regenerate`   | Manual trigger for current user (`scope: daily│weekly`) |
+| GET    | `/api/skills/drafts?status=draft│approved` | List auto-distilled skill drafts |
+| POST   | `/api/skills/drafts/:id/approve` | Approve a draft (returns it for plugin install) |
 
 ### Raw upload payload
 
@@ -110,18 +117,23 @@ Defaults (override in config.yaml `cron:` block):
 | Job             | Schedule           | Behavior |
 |-----------------|--------------------|----------|
 | Daily summary   | `0 3 * * *`        | For each user with raw data yesterday → LLM produces structured daily summary. Idempotent. |
+| Atom distill    | with daily summary | Same raws → LLM extracts ≤10 atomic memories (`source='auto'`), watermark-tracked in `distill_state` for idempotence. Disable via `cron.auto_distill: false`. Never triggers profile refresh. |
 | Weekly profile  | `0 3 * * 0`        | For each user → LLM regenerates profile from last 7 days summaries. Hard memories are tracked for delta triggers but not fed into the profile (they're injected into the system prompt separately). |
+| Skill extract   | `0 3 * * 0`        | Long sessions (≥ `cron.skill_min_raw_count` raw rows, ended on a tool call) from the past week → SKILL.md drafts. Drafts are inert until approved. |
 | Raw prune       | `0 4 1 * *`        | Drop raw_conversations > 90 days old. Summaries kept forever. |
+| Consolidation   | `0 4 1 * *`        | After prune: LLM merges duplicate memories and deprecates stale ones (soft, auditable). |
 | Delta trigger   | on-write           | When user accumulates ≥10 new hard memories since last profile run, refresh profile immediately. |
 
 ## LLM cost estimate
 
 Per user per week:
 - 7 daily summaries × ~3k input tokens × $0.15/M (gpt-4o-mini) ≈ **$0.003**
+- 7 atom distills × ~3k input tokens ≈ **$0.003**
 - 1 weekly profile × ~5k input tokens ≈ **$0.001**
 - 1-2 delta profile refreshes ≈ **$0.002**
+- 0-3 skill extractions + 1 monthly consolidation ≈ **$0.002**
 
-**Total: ~$0.006/user/week** with gpt-4o-mini.
+**Total: ~$0.011/user/week** with gpt-4o-mini.
 
 ## Data model
 
@@ -132,11 +144,21 @@ raw_conversations   (volume tier — pruned at 90 days)
 
 hard_memories       (value tier — kept forever)
   ├─ user_id, type, title, content, facts[], concepts[]
-  ├─ FTS5 virtual table for search
+  ├─ source: manual | auto | auto-promoted
+  ├─ governance: status(active|deprecated), usage_count, last_used_at
+  ├─ provenance: source_date, session_id
+  ├─ FTS5 virtual table for search (trigram tokenizer — CJK-safe, auto-upgraded from unicode61)
   └─ indexed by (user_id, timestamp)
 
 daily_summaries     (LLM output — kept forever)
-  └─ unique(user_id, date)
+  ├─ unique(user_id, date)
+  └─ FTS5 virtual table (second search tier)
+
+distill_state       (atom-distill watermark)
+  └─ pk: (user_id, date) → last_raw_id
+
+skill_drafts        (LLM output — draft | approved)
+  └─ indexed by (user_id, status)
 
 user_profiles       (LLM output — single row per user, upserted)
   └─ pk: user_id

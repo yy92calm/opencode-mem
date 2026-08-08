@@ -20,6 +20,9 @@
   "profile_cache_ttl_ms": 60000,
   "memories_cache_ttl_ms": 30000,
 
+  "//optional_injection": "Char budget for memories injected into each turn (ranked by source/priority/recency)",
+  "inject_char_budget": 6000,
+
   "//optional_paths": "Where local cache files live",
   "offline_cache_path": "~/.config/opencode/mem/offline.jsonl",
   "profile_cache_path": "~/.config/opencode/mem/profile.cache.md"

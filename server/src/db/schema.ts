@@ -36,6 +36,49 @@ function migrate(database: Database.Database): void {
       /* SQLite < 3.35 has no DROP COLUMN; leave the column in place — it's harmless once unused. */
     }
   }
+
+  // Asset-governance columns on hard_memories (status / usage tracking /
+  // auto-distill provenance). Legacy DBs predate these; fresh DBs already
+  // have them from SCHEMA above.
+  const hardCols = database.prepare(`PRAGMA table_info(hard_memories)`).all() as { name: string }[];
+  const hardColNames = new Set(hardCols.map(c => c.name));
+  const addCol = (ddl: string) => {
+    try { database.exec(ddl); } catch { /* column may already exist — ignore */ }
+  };
+  if (!hardColNames.has('status')) addCol(`ALTER TABLE hard_memories ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`);
+  if (!hardColNames.has('usage_count')) addCol(`ALTER TABLE hard_memories ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0`);
+  if (!hardColNames.has('last_used_at')) addCol(`ALTER TABLE hard_memories ADD COLUMN last_used_at TEXT`);
+  if (!hardColNames.has('source_date')) addCol(`ALTER TABLE hard_memories ADD COLUMN source_date TEXT`);
+
+  // Backfill daily_summaries_fts for legacy rows (trigger-synced from here on).
+  const ftsCount = database.prepare(`SELECT COUNT(*) as c FROM daily_summaries_fts`).get() as { c: number };
+  const sumCount = database.prepare(`SELECT COUNT(*) as c FROM daily_summaries`).get() as { c: number };
+  if (ftsCount.c !== sumCount.c) {
+    database.exec(`INSERT INTO daily_summaries_fts(daily_summaries_fts) VALUES ('rebuild')`);
+  }
+
+  // Tokenizer upgrade: legacy FTS tables used unicode61, which treats CJK
+  // runs as single tokens — Chinese memories were effectively unsearchable.
+  // Recreate with the trigram tokenizer (substring matching, CJK-friendly).
+  // Triggers reference the table by name and survive the swap.
+  upgradeFtsTokenizer(database, 'hard_memories_fts',
+    `CREATE VIRTUAL TABLE hard_memories_fts USING fts5(
+       title, content, facts, concepts,
+       content='hard_memories', content_rowid='id', tokenize='trigram')`);
+  upgradeFtsTokenizer(database, 'daily_summaries_fts',
+    `CREATE VIRTUAL TABLE daily_summaries_fts USING fts5(
+       content, content='daily_summaries', content_rowid='id', tokenize='trigram')`);
+}
+
+/** Drop + recreate an external-content FTS5 table with a new tokenizer, then rebuild. */
+function upgradeFtsTokenizer(database: Database.Database, name: string, createSql: string): void {
+  const meta = database
+    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`)
+    .get(name) as { sql: string } | undefined;
+  if (!meta || /trigram/i.test(meta.sql)) return;
+  database.exec(`DROP TABLE ${name};`);
+  database.exec(createSql);
+  database.exec(`INSERT INTO ${name}(${name}) VALUES ('rebuild')`);
 }
 
 export function getDb(): Database.Database {
@@ -85,6 +128,10 @@ CREATE TABLE IF NOT EXISTS hard_memories (
   concepts TEXT NOT NULL DEFAULT '[]',
   source TEXT NOT NULL DEFAULT 'manual',
   priority TEXT NOT NULL DEFAULT 'high',
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'deprecated')),
+  usage_count INTEGER NOT NULL DEFAULT 0,
+  last_used_at TEXT,
+  source_date TEXT,
   session_id TEXT,
   timestamp TEXT NOT NULL,
   created_at TEXT DEFAULT (datetime('now'))
@@ -93,11 +140,14 @@ CREATE TABLE IF NOT EXISTS hard_memories (
 CREATE INDEX IF NOT EXISTS idx_hard_user_ts ON hard_memories(user_id, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_hard_user_type ON hard_memories(user_id, type);
 
--- FTS5 for hard_memories full-text search
+-- FTS5 for hard_memories full-text search.
+-- trigram tokenizer: substring matching, so CJK queries work (unicode61
+-- collapses Chinese runs into single tokens and misses mid-word matches).
 CREATE VIRTUAL TABLE IF NOT EXISTS hard_memories_fts USING fts5(
   title, content, facts, concepts,
   content='hard_memories',
-  content_rowid='id'
+  content_rowid='id',
+  tokenize='trigram'
 );
 
 CREATE TRIGGER IF NOT EXISTS hard_memories_ai AFTER INSERT ON hard_memories BEGIN
@@ -129,6 +179,53 @@ CREATE TABLE IF NOT EXISTS daily_summaries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_summary_user_date ON daily_summaries(user_id, date DESC);
+
+-- FTS5 for daily summaries (second retrieval tier when hard memories under-fill)
+CREATE VIRTUAL TABLE IF NOT EXISTS daily_summaries_fts USING fts5(
+  content,
+  content='daily_summaries',
+  content_rowid='id',
+  tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS daily_summaries_ai AFTER INSERT ON daily_summaries BEGIN
+  INSERT INTO daily_summaries_fts(rowid, content) VALUES (new.id, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS daily_summaries_ad AFTER DELETE ON daily_summaries BEGIN
+  INSERT INTO daily_summaries_fts(daily_summaries_fts, rowid, content)
+  VALUES ('delete', old.id, old.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS daily_summaries_au AFTER UPDATE ON daily_summaries BEGIN
+  INSERT INTO daily_summaries_fts(daily_summaries_fts, rowid, content)
+  VALUES ('delete', old.id, old.content);
+  INSERT INTO daily_summaries_fts(rowid, content) VALUES (new.id, new.content);
+END;
+
+-- Auto-distill watermark: how far each user+date has been refined into atoms.
+-- Makes the distill pipeline idempotent across re-runs of the same day.
+CREATE TABLE IF NOT EXISTS distill_state (
+  user_id TEXT NOT NULL,
+  date TEXT NOT NULL,
+  last_raw_id INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, date)
+);
+
+-- Skill drafts distilled from long successful sessions (await human approval)
+CREATE TABLE IF NOT EXISTS skill_drafts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  content_md TEXT NOT NULL,
+  session_id TEXT,
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'approved')),
+  created_at TEXT DEFAULT (datetime('now')),
+  approved_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_skill_user_status ON skill_drafts(user_id, status);
 
 -- User profiles (LLM-generated from daily summaries; hard memories injected separately by plugin)
 CREATE TABLE IF NOT EXISTS user_profiles (

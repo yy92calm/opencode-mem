@@ -9,7 +9,7 @@ import {
   unlinkSync,
 } from 'fs';
 import { dirname } from 'path';
-import type { RawConversation, HardMemory, MemPluginConfig } from '../types/index.js';
+import type { RawConversation, HardMemory, MemPluginConfig, SkillDraft } from '../types/index.js';
 
 /**
  * Worker HTTP client with:
@@ -228,6 +228,26 @@ export class WorkerClient {
       this.healthy = false;
     }
     return this.healthy;
+  }
+
+  async listSkillDrafts(status?: 'draft' | 'approved'): Promise<SkillDraft[]> {
+    const qs = status ? `?status=${status}` : '';
+    try {
+      const result = await this.get<{ items: SkillDraft[] }>(`/api/skills/drafts${qs}`);
+      return result?.items ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Explicit human approval — throws on 404/already-approved. */
+  async approveSkillDraft(id: number): Promise<SkillDraft | null> {
+    try {
+      return await this.post<SkillDraft>(`/api/skills/drafts/${id}/approve`, {});
+    } catch (e) {
+      this.log('warn', 'skill draft approve failed', { id, error: String(e) });
+      return null;
+    }
   }
 
   /** Drain offline cache by retrying every entry. Called on init + periodic. */

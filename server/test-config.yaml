@@ -1,0 +1,22 @@
+port: 3999
+db_path: ./data/test-memory.db
+tz: Asia/Shanghai
+
+llm:
+  provider: openai-compatible
+  base_url: http://127.0.0.1:9/v1
+  api_key: ${LLM_API_KEY}
+  model: test-model
+  timeout_ms: 5000
+  max_retries: 1
+
+users:
+  - user_id: tester
+    api_key: test-key-123
+
+cron:
+  daily_summary: "0 0 31 2 *"
+  weekly_profile: "0 0 31 2 *"
+  hard_memory_threshold: 10
+  auto_distill: true
+  skill_min_raw_count: 30

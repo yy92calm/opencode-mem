@@ -17,13 +17,19 @@ export interface RawConversation {
 export interface HardMemory {
   id?: number;
   user_id: string;
-  type: 'preference' | 'config' | 'decision' | 'error' | 'discovery' | 'fact';
+  type: 'preference' | 'config' | 'decision' | 'error' | 'discovery' | 'fact' | 'constraint' | 'pattern';
   title: string;
   content: string;
   facts: string[];
   concepts: string[];
-  source: 'manual' | 'auto-promoted';
+  /** manual = user "记住X"; auto = cron-distilled from raw conversations */
+  source: 'manual' | 'auto-promoted' | 'auto';
   priority: 'high' | 'medium' | 'low';
+  status: 'active' | 'deprecated';
+  usage_count: number;
+  last_used_at: string | null;
+  /** Distill provenance: calendar day the source raws belonged to */
+  source_date: string | null;
   session_id?: string | null;
   timestamp: string;
 }
@@ -46,6 +52,17 @@ export interface UserProfile {
   source_memory_count: number;
 }
 
+export interface SkillDraft {
+  id?: number;
+  user_id: string;
+  title: string;
+  content_md: string;
+  session_id: string | null;
+  status: 'draft' | 'approved';
+  created_at?: string;
+  approved_at?: string | null;
+}
+
 export interface LLMConfig {
   provider: string;
   base_url: string;
@@ -64,6 +81,10 @@ export interface CronConfig {
   daily_summary: string;
   weekly_profile: string;
   hard_memory_threshold: number;
+  /** Auto-distill raw conversations into atom memories during daily summary */
+  auto_distill: boolean;
+  /** Min raw rows for a session to be considered for skill extraction */
+  skill_min_raw_count: number;
 }
 
 export interface ServerConfig {

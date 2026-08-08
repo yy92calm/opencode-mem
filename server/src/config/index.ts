@@ -101,6 +101,8 @@ export function loadConfig(path: string = DEFAULT_CONFIG_PATH): ServerConfig {
       daily_summary: dailyExpr,
       weekly_profile: weeklyExpr,
       hard_memory_threshold: expanded.cron?.hard_memory_threshold ?? 10,
+      auto_distill: expanded.cron?.auto_distill ?? true,
+      skill_min_raw_count: expanded.cron?.skill_min_raw_count ?? 30,
     },
   };
 }

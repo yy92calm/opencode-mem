@@ -1,5 +1,5 @@
 import { getDb } from './schema.js';
-import type { RawConversation, HardMemory, DailySummary, UserProfile } from '../types/index.js';
+import type { RawConversation, HardMemory, DailySummary, UserProfile, SkillDraft } from '../types/index.js';
 
 // ===== Raw conversations =====
 
@@ -63,45 +63,182 @@ export function pruneRawOlderThan(days: number): number {
 
 // ===== Hard memories =====
 
-export function insertHard(m: Omit<HardMemory, 'id'>): number {
+export type HardMemoryInsert = Omit<HardMemory, 'id' | 'status' | 'usage_count' | 'last_used_at' | 'source_date'> & {
+  status?: 'active' | 'deprecated';
+  source_date?: string | null;
+};
+
+export function insertHard(m: HardMemoryInsert): number {
+  // Dedup guard: a user-asserted (manual) memory supersedes auto-distilled
+  // atoms with the same title — deprecate them instead of deleting, so the
+  // history stays auditable.
+  if (m.source === 'manual') {
+    getDb()
+      .prepare(`
+        UPDATE hard_memories SET status = 'deprecated'
+        WHERE user_id = ? AND source = 'auto' AND status = 'active'
+          AND lower(trim(title)) = lower(trim(?))
+      `)
+      .run(m.user_id, m.title);
+  }
+
   const stmt = getDb().prepare(`
-    INSERT INTO hard_memories (user_id, type, title, content, facts, concepts, source, priority, session_id, timestamp)
-    VALUES (@user_id, @type, @title, @content, @facts, @concepts, @source, @priority, @session_id, @timestamp)
+    INSERT INTO hard_memories (user_id, type, title, content, facts, concepts, source, priority, status, session_id, source_date, timestamp)
+    VALUES (@user_id, @type, @title, @content, @facts, @concepts, @source, @priority, @status, @session_id, @source_date, @timestamp)
   `);
   const result = stmt.run({
     ...m,
     facts: JSON.stringify(m.facts),
     concepts: JSON.stringify(m.concepts),
+    status: m.status ?? 'active',
+    source_date: m.source_date ?? null,
     session_id: m.session_id ?? null,
   });
   return Number(result.lastInsertRowid);
 }
 
-export function listHard(user_id: string, limit = 100): HardMemory[] {
+export function listHard(user_id: string, limit = 100, includeDeprecated = false): HardMemory[] {
+  const statusFilter = includeDeprecated ? '' : `AND status = 'active'`;
   const rows = getDb()
-    .prepare(`SELECT * FROM hard_memories WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?`)
+    .prepare(`SELECT * FROM hard_memories WHERE user_id = ? ${statusFilter} ORDER BY timestamp DESC LIMIT ?`)
     .all(user_id, limit) as any[];
   return rows.map(deserializeHard);
 }
 
-export function searchHard(user_id: string, query: string, limit = 50): HardMemory[] {
-  if (!query.trim()) return listHard(user_id, limit);
-  // Build an FTS5 query from whitespace-separated terms. Each term is wrapped
-  // in double-quotes (FTS5 "phrase"), and terms are space-separated so FTS5
-  // implicitly ANDs them. This matches the keyword-search expectation: every
-  // word must occur, but not necessarily adjacently (unlike quoting the whole
-  // string, which would only match the exact multi-word phrase).
-  const terms = query.trim().split(/\s+/);
-  const safe = terms.map(t => `"${t.replace(/"/g, '""')}"`).join(' ');
-  const rows = getDb()
-    .prepare(`
-      SELECT h.* FROM hard_memories_fts fts
-      JOIN hard_memories h ON h.id = fts.rowid
-      WHERE hard_memories_fts MATCH ? AND h.user_id = ?
-      ORDER BY rank LIMIT ?
-    `)
-    .all(safe, user_id, limit) as any[];
+export function searchHard(user_id: string, query: string, limit = 50, includeDeprecated = false): HardMemory[] {
+  if (!query.trim()) return listHard(user_id, limit, includeDeprecated);
+  const { longTerms, shortTerms } = splitQueryTerms(query);
+  const statusFilter = includeDeprecated ? '' : `AND h.status = 'active'`;
+
+  // Sub-3-char terms (e.g. 2-char Chinese words) can't form trigrams, so
+  // they're enforced as LIKE substring filters instead of MATCH clauses.
+  const like = likeConditions(shortTerms, ['h.title', 'h.content', 'h.facts', 'h.concepts']);
+
+  let rows: any[];
+  if (longTerms.length > 0) {
+    // trigram tokenizer: each quoted term is a substring; space-separated
+    // phrases AND together (every term must occur, not necessarily adjacent).
+    const match = longTerms.map(t => `"${t.replace(/"/g, '""')}"`).join(' ');
+    rows = getDb()
+      .prepare(`
+        SELECT h.* FROM hard_memories_fts fts
+        JOIN hard_memories h ON h.id = fts.rowid
+        WHERE hard_memories_fts MATCH ? AND h.user_id = ? ${statusFilter} ${like.sql}
+        ORDER BY rank LIMIT ?
+      `)
+      .all(match, user_id, ...like.params, limit) as any[];
+  } else {
+    // Only short terms: pure LIKE scan (still user-scoped + bounded).
+    rows = getDb()
+      .prepare(`
+        SELECT h.* FROM hard_memories h
+        WHERE h.user_id = ? ${statusFilter} ${like.sql}
+        ORDER BY h.timestamp DESC LIMIT ?
+      `)
+      .all(user_id, ...like.params, limit) as any[];
+  }
   return rows.map(deserializeHard);
+}
+
+/** Second retrieval tier: match daily summaries when hard memories under-fill. */
+export function searchSummaries(user_id: string, query: string, limit = 10): DailySummary[] {
+  if (!query.trim()) return [];
+  const { longTerms, shortTerms } = splitQueryTerms(query);
+  const like = likeConditions(shortTerms, ['s.content']);
+
+  let rows: DailySummary[];
+  if (longTerms.length > 0) {
+    const match = longTerms.map(t => `"${t.replace(/"/g, '""')}"`).join(' ');
+    rows = getDb()
+      .prepare(`
+        SELECT s.* FROM daily_summaries_fts fts
+        JOIN daily_summaries s ON s.id = fts.rowid
+        WHERE daily_summaries_fts MATCH ? AND s.user_id = ? ${like.sql}
+        ORDER BY rank LIMIT ?
+      `)
+      .all(match, user_id, ...like.params, limit) as DailySummary[];
+  } else {
+    rows = getDb()
+      .prepare(`
+        SELECT s.* FROM daily_summaries s
+        WHERE s.user_id = ? ${like.sql}
+        ORDER BY s.date DESC LIMIT ?
+      `)
+      .all(user_id, ...like.params, limit) as DailySummary[];
+  }
+  return rows;
+}
+
+/**
+ * Split a user query into MATCH-able terms (≥3 codepoints, trigram-capable)
+ * and short terms that need LIKE fallback. Codepoint length matters: a 2-char
+ * Chinese word is one UTF-16 "length" unit per char, so [...t] keeps CJK and
+ * ASCII semantics aligned.
+ */
+function splitQueryTerms(query: string): { longTerms: string[]; shortTerms: string[] } {
+  const terms = query.trim().split(/\s+/).filter(Boolean);
+  const longTerms: string[] = [];
+  const shortTerms: string[] = [];
+  for (const t of terms) {
+    ([...t].length >= 3 ? longTerms : shortTerms).push(t);
+  }
+  return { longTerms, shortTerms };
+}
+
+/** Build escaped `AND (col LIKE ? OR ...)` clauses, one per short term. */
+function likeConditions(terms: string[], cols: string[]): { sql: string; params: string[] } {
+  if (terms.length === 0) return { sql: '', params: [] };
+  const params: string[] = [];
+  const clauses = terms.map(t => {
+    const escaped = t.replace(/[\\%_]/g, m => `\\${m}`);
+    // One pattern per column placeholder — LIKE is repeated across cols.
+    for (let i = 0; i < cols.length; i++) params.push(`%${escaped}%`);
+    return `(${cols.map(c => `${c} LIKE ? ESCAPE '\\'`).join(' OR ')})`;
+  });
+  return { sql: `AND ${clauses.join(' AND ')}`, params };
+}
+
+/** Bump usage counters for memories that were served in a search result. */
+export function touchHardUsage(ids: number[]): void {
+  if (ids.length === 0) return;
+  const placeholders = ids.map(() => '?').join(',');
+  getDb()
+    .prepare(`UPDATE hard_memories SET usage_count = usage_count + 1, last_used_at = datetime('now') WHERE id IN (${placeholders})`)
+    .run(...ids);
+}
+
+export function setHardStatus(user_id: string, id: number, status: 'active' | 'deprecated'): boolean {
+  const result = getDb()
+    .prepare(`UPDATE hard_memories SET status = ? WHERE user_id = ? AND id = ?`)
+    .run(status, user_id, id);
+  return result.changes > 0;
+}
+
+export function getHard(user_id: string, id: number): HardMemory | null {
+  const row = getDb()
+    .prepare(`SELECT * FROM hard_memories WHERE user_id = ? AND id = ?`)
+    .get(user_id, id) as any;
+  return row ? deserializeHard(row) : null;
+}
+
+/** Overwrite content of a memory (used by monthly consolidation merges). */
+export function updateHardContent(id: number, patch: { title?: string; content?: string; facts?: string[]; concepts?: string[] }): void {
+  getDb()
+    .prepare(`
+      UPDATE hard_memories SET
+        title = COALESCE(?, title),
+        content = COALESCE(?, content),
+        facts = COALESCE(?, facts),
+        concepts = COALESCE(?, concepts)
+      WHERE id = ?
+    `)
+    .run(
+      patch.title ?? null,
+      patch.content ?? null,
+      patch.facts ? JSON.stringify(patch.facts) : null,
+      patch.concepts ? JSON.stringify(patch.concepts) : null,
+      id,
+    );
 }
 
 export function deleteHard(user_id: string, id: number): boolean {
@@ -218,4 +355,138 @@ export function listAllUsers(): string[] {
     )
   `).all() as { user_id: string }[];
   return rows.map(r => r.user_id);
+}
+
+// ===== Distill state (auto-atom watermark) =====
+
+export function getDistillState(user_id: string, date: string): number {
+  const row = getDb()
+    .prepare(`SELECT last_raw_id FROM distill_state WHERE user_id = ? AND date = ?`)
+    .get(user_id, date) as { last_raw_id: number } | undefined;
+  return row?.last_raw_id ?? 0;
+}
+
+export function setDistillState(user_id: string, date: string, last_raw_id: number): void {
+  getDb()
+    .prepare(`
+      INSERT INTO distill_state (user_id, date, last_raw_id, updated_at)
+      VALUES (?, ?, ?, datetime('now'))
+      ON CONFLICT(user_id, date) DO UPDATE SET
+        last_raw_id = excluded.last_raw_id,
+        updated_at = excluded.updated_at
+    `)
+    .run(user_id, date, last_raw_id);
+}
+
+export function maxRawIdByDate(user_id: string, date: string): number {
+  const row = getDb()
+    .prepare(`
+      SELECT COALESCE(MAX(id), 0) as m FROM raw_conversations
+      WHERE user_id = ? AND date(datetime(timestamp, 'localtime')) = ?
+    `)
+    .get(user_id, date) as { m: number };
+  return row.m;
+}
+
+// ===== Skill drafts =====
+
+export function insertSkillDraft(d: Omit<SkillDraft, 'id' | 'status'>): number {
+  const result = getDb()
+    .prepare(`
+      INSERT INTO skill_drafts (user_id, title, content_md, session_id)
+      VALUES (@user_id, @title, @content_md, @session_id)
+    `)
+    .run({ ...d, session_id: d.session_id ?? null });
+  return Number(result.lastInsertRowid);
+}
+
+export function listSkillDrafts(user_id: string, status?: 'draft' | 'approved'): SkillDraft[] {
+  const filter = status ? `AND status = ?` : '';
+  const rows = (status
+    ? getDb().prepare(`SELECT * FROM skill_drafts WHERE user_id = ? ${filter} ORDER BY created_at DESC`).all(user_id, status)
+    : getDb().prepare(`SELECT * FROM skill_drafts WHERE user_id = ? ORDER BY created_at DESC`).all(user_id)
+  ) as SkillDraft[];
+  return rows;
+}
+
+export function approveSkillDraft(user_id: string, id: number): SkillDraft | null {
+  const result = getDb()
+    .prepare(`UPDATE skill_drafts SET status = 'approved', approved_at = datetime('now') WHERE user_id = ? AND id = ? AND status = 'draft'`)
+    .run(user_id, id);
+  if (result.changes === 0) return null;
+  return getDb().prepare(`SELECT * FROM skill_drafts WHERE id = ?`).get(id) as SkillDraft;
+}
+
+/** True if this session already produced a skill draft (skip re-extraction). */
+export function hasSkillDraftForSession(user_id: string, session_id: string): boolean {
+  const row = getDb()
+    .prepare(`SELECT COUNT(*) as c FROM skill_drafts WHERE user_id = ? AND session_id = ?`)
+    .get(user_id, session_id) as { c: number };
+  return row.c > 0;
+}
+
+/**
+ * Sessions from the last `days` days with at least `minRaw` raw rows —
+ * candidates for skill extraction.
+ */
+export function listLongSessions(user_id: string, days: number, minRaw: number): { session_id: string; count: number }[] {
+  const rows = getDb()
+    .prepare(`
+      SELECT session_id, COUNT(*) as count FROM raw_conversations
+      WHERE user_id = ?
+        AND session_id != 'unknown'
+        AND timestamp >= datetime('now', '-' || ? || ' days')
+      GROUP BY session_id
+      HAVING COUNT(*) >= ?
+      ORDER BY count DESC
+    `)
+    .all(user_id, days, minRaw) as { session_id: string; count: number }[];
+  return rows;
+}
+
+export function listRawBySession(user_id: string, session_id: string): RawConversation[] {
+  return getDb()
+    .prepare(`SELECT * FROM raw_conversations WHERE user_id = ? AND session_id = ? ORDER BY timestamp ASC`)
+    .all(user_id, session_id) as RawConversation[];
+}
+
+// ===== Observability =====
+
+export interface UserStats {
+  raw_total: number;
+  raw_last_7d: number;
+  hard_active: number;
+  hard_manual: number;
+  hard_auto: number;
+  hard_deprecated: number;
+  summaries: number;
+  profile_version: number | null;
+  profile_generated_at: string | null;
+  skill_drafts_pending: number;
+  skill_drafts_approved: number;
+  most_used_memories: { id: number; title: string; usage_count: number }[];
+}
+
+export function getStats(user_id: string): UserStats {
+  const db = getDb();
+  const one = (sql: string, ...params: any[]) => (db.prepare(sql).get(...params) as any);
+  const profile = one(`SELECT version, generated_at FROM user_profiles WHERE user_id = ?`, user_id);
+  return {
+    raw_total: one(`SELECT COUNT(*) c FROM raw_conversations WHERE user_id = ?`, user_id).c,
+    raw_last_7d: one(`SELECT COUNT(*) c FROM raw_conversations WHERE user_id = ? AND timestamp >= datetime('now', '-7 days')`, user_id).c,
+    hard_active: one(`SELECT COUNT(*) c FROM hard_memories WHERE user_id = ? AND status = 'active'`, user_id).c,
+    hard_manual: one(`SELECT COUNT(*) c FROM hard_memories WHERE user_id = ? AND status = 'active' AND source = 'manual'`, user_id).c,
+    hard_auto: one(`SELECT COUNT(*) c FROM hard_memories WHERE user_id = ? AND status = 'active' AND source = 'auto'`, user_id).c,
+    hard_deprecated: one(`SELECT COUNT(*) c FROM hard_memories WHERE user_id = ? AND status = 'deprecated'`, user_id).c,
+    summaries: one(`SELECT COUNT(*) c FROM daily_summaries WHERE user_id = ?`, user_id).c,
+    profile_version: profile?.version ?? null,
+    profile_generated_at: profile?.generated_at ?? null,
+    skill_drafts_pending: one(`SELECT COUNT(*) c FROM skill_drafts WHERE user_id = ? AND status = 'draft'`, user_id).c,
+    skill_drafts_approved: one(`SELECT COUNT(*) c FROM skill_drafts WHERE user_id = ? AND status = 'approved'`, user_id).c,
+    most_used_memories: db.prepare(`
+      SELECT id, title, usage_count FROM hard_memories
+      WHERE user_id = ? AND status = 'active' AND usage_count > 0
+      ORDER BY usage_count DESC LIMIT 5
+    `).all(user_id) as UserStats['most_used_memories'],
+  };
 }
